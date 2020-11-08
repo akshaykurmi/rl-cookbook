@@ -1,0 +1,9 @@
+.idea
+.ipynb_checkpoints
+__pycache__
+ckpt
+log
+
+.DS_Store
+*.pyc
+
