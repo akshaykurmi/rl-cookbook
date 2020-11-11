@@ -4,7 +4,7 @@ import gym
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from rl.agents.vpg.vpg1 import VPG1
+from rl.agents.vpg.vpg import VPG
 
 
 class PolicyNetwork(tf.keras.Model):
@@ -35,14 +35,17 @@ class PolicyNetwork(tf.keras.Model):
 if __name__ == '__main__':
     env = gym.make('CartPole-v0')
     model = PolicyNetwork(env.observation_space.shape, env.action_space.n)
-    agent = VPG1(
+    agent = VPG(
         env=env,
         model=model,
-        alpha=1e-3,
-        max_steps=1_000_000,
-        update_steps=1024,
-        ckpt_dir='./ckpt/vpg1',
-        log_dir='./log/vpg1'
+        lr=1e-3,
+        epochs=150,
+        episodes_per_epoch=64,
+        max_episode_length=250,
+        ckpt_epochs=10,
+        log_epochs=1,
+        ckpt_dir='./ckpt/vpg',
+        log_dir='./log/vpg'
     )
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['train', 'simulate'], required=True, help='Train or simulate the agent?')
