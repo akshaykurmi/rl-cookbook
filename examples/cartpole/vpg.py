@@ -1,4 +1,6 @@
 import argparse
+import os
+import shutil
 
 import gym
 import tensorflow as tf
@@ -33,8 +35,19 @@ class PolicyNetwork(tf.keras.Model):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['train', 'simulate'], required=True, help='Train or simulate the agent?')
+    args = parser.parse_args()
+
     env = gym.make('CartPole-v0')
     model = PolicyNetwork(env.observation_space.shape, env.action_space.n)
+    ckpt_dir = os.path.join(os.path.dirname(__file__), 'ckpt', 'vpg')
+    log_dir = os.path.join(os.path.dirname(__file__), 'log', 'vpg')
+    if args.mode == 'train':
+        if os.path.exists(ckpt_dir):
+            shutil.rmtree(ckpt_dir)
+        if os.path.exists(log_dir):
+            shutil.rmtree(log_dir)
     agent = VPG(
         env=env,
         model=model,
@@ -44,12 +57,10 @@ if __name__ == '__main__':
         max_episode_length=250,
         ckpt_epochs=10,
         log_epochs=1,
-        ckpt_dir='./ckpt/vpg',
-        log_dir='./log/vpg'
+        ckpt_dir=ckpt_dir,
+        log_dir=log_dir
     )
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['train', 'simulate'], required=True, help='Train or simulate the agent?')
-    args = parser.parse_args()
+
     if args.mode == 'train':
         agent.train()
     if args.mode == 'simulate':
