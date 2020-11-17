@@ -6,7 +6,7 @@ import gym
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from rl.agents.vpg.vpg import VPG
+from rl.agents.vpg.vpg_gae import VPGGAE
 
 
 class PolicyNetwork(tf.keras.Model):
@@ -19,7 +19,7 @@ class PolicyNetwork(tf.keras.Model):
     def get_config(self):
         pass
 
-    def call(self, inputs, **kwarg):
+    def call(self, inputs, **kwargs):
         x = self.dense1(inputs)
         x = self.dense2(x)
         x = self.dense3(x)
@@ -34,27 +34,53 @@ class PolicyNetwork(tf.keras.Model):
         return tfp.distributions.Categorical(logits=logits).log_prob(actions)
 
 
+class ValueFunctionNetwork(tf.keras.Model):
+    def __init__(self, input_shape):
+        super().__init__()
+        self.dense1 = tf.keras.layers.Dense(units=20, activation='relu', input_shape=input_shape)
+        self.dense2 = tf.keras.layers.Dense(units=10, activation='relu')
+        self.dense3 = tf.keras.layers.Dense(units=1, activation='linear')
+
+    def get_config(self):
+        pass
+
+    def call(self, inputs, **kwargs):
+        x = self.dense1(inputs)
+        x = self.dense2(x)
+        x = self.dense3(x)
+        return x
+
+    def compute_value(self, observations):
+        return self.call(observations)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['train', 'simulate'], required=True, help='Train or simulate the agent?')
     args = parser.parse_args()
 
     env = gym.make('CartPole-v0')
-    model = PolicyNetwork(env.observation_space.shape, env.action_space.n)
-    ckpt_dir = os.path.join(os.path.dirname(__file__), 'ckpt', 'vpg')
-    log_dir = os.path.join(os.path.dirname(__file__), 'log', 'vpg')
+    policy_model = PolicyNetwork(env.observation_space.shape, env.action_space.n)
+    vf_model = ValueFunctionNetwork(env.observation_space.shape)
+    ckpt_dir = os.path.join(os.path.dirname(__file__), 'ckpt', 'vpg_gae')
+    log_dir = os.path.join(os.path.dirname(__file__), 'log', 'vpg_gae')
     if args.mode == 'train':
         if os.path.exists(ckpt_dir):
             shutil.rmtree(ckpt_dir)
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
-    agent = VPG(
+    agent = VPGGAE(
         env=env,
-        model=model,
-        lr=1e-3,
+        policy_model=policy_model,
+        vf_model=vf_model,
+        lr_policy=1e-3,
+        lr_vf=1e-3,
+        gamma=0.98,
+        lambda_=0.96,
         epochs=1000,
         episodes_per_epoch=2,
         max_episode_length=250,
+        vf_update_iterations=20,
         ckpt_epochs=10,
         log_epochs=1,
         ckpt_dir=ckpt_dir,
