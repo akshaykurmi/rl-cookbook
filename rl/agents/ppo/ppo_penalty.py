@@ -36,7 +36,7 @@ class PPOPenalty:
         self.epochs_done = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.policy_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_policy)
         self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_vf)
-        self.ckpt = tf.train.Checkpoint(policy=self.policy, vf=self.vf,
+        self.ckpt = tf.train.Checkpoint(policy=self.policy, policy_old=self.policy_old, vf=self.vf,
                                         policy_optimizer=self.policy_optimizer, vf_optimizer=self.vf_optimizer,
                                         epochs_done=self.epochs_done)
         self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self.ckpt_dir, max_to_keep=1)
