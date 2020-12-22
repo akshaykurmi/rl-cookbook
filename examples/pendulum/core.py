@@ -28,12 +28,15 @@ class PolicyNetwork(tf.keras.Model):
         x = self.dense3(x)
         return x
 
-    def sample(self, observations, noise=None):
+    def sample(self, observations, noise=None, noise_clip=None):
         actions = self.call(observations)
         actions = (actions - self.action_min) / (self.action_max - self.action_min)
         actions = actions * (self.env_action_max - self.env_action_min) + self.env_action_min
         if noise:
-            actions += tf.random.normal(actions.shape, mean=0.0, stddev=noise)
+            epsilon = tf.random.normal(actions.shape, mean=0.0, stddev=noise)
+            if noise_clip:
+                epsilon = tf.clip_by_value(epsilon, -noise_clip, noise_clip)
+            actions += epsilon
         actions = tf.clip_by_value(actions, self.env_action_min, self.env_action_max)
         return actions
 
