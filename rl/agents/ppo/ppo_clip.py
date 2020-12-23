@@ -87,6 +87,7 @@ class PPOClip:
                 pbar.update(1)
             self.env.close()
 
+    @tf.function(experimental_relax_shapes=True)
     def _update_policy(self, observations, actions, advantages):
         advantages -= tf.reduce_mean(advantages)
         advantages /= tf.math.reduce_std(advantages) + 1e-8
@@ -96,8 +97,9 @@ class PPOClip:
                                                       'advantages': advantages, 'log_probs_old': log_probs_old})
         dataset = dataset.shuffle(500).batch(self.policy_batch_size)
 
-        losses = []
-        for i in range(self.policy_update_iterations):
+        losses = tf.TensorArray(tf.float32, size=0, dynamic_size=True)
+        i = 0
+        for _ in range(self.policy_update_iterations):
             for batch in dataset:
                 with tf.GradientTape() as tape:
                     log_probs = self.policy.log_prob(batch['observations'], batch['actions'])
@@ -108,8 +110,9 @@ class PPOClip:
                                                            clipped_importance_sampling_weight * batch['advantages']))
                     gradients = tape.gradient(loss, self.policy.trainable_variables)
                     self.policy_optimizer.apply_gradients(zip(gradients, self.policy.trainable_variables))
-                    losses.append(loss)
-        return tf.reduce_mean(losses)
+                    losses.write(i, loss)
+                    i += 1
+        return tf.reduce_mean(losses.stack())
 
     @tf.function(experimental_relax_shapes=True)
     def _update_vf(self, observations, rewards_to_go):
