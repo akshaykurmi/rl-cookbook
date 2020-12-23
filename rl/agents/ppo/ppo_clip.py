@@ -47,13 +47,13 @@ class PPOClip:
                 for episode in range(self.episodes_per_epoch):
                     observation = self.env.reset()
                     for step in range(self.max_episode_length):
-                        action = self.policy.sample(observation.reshape(1, -1)).numpy()[0]
-                        value = self.vf.compute(observation.reshape(1, -1)).numpy()[0, 0]
+                        action = self.policy.sample(tf.expand_dims(observation, axis=0)).numpy()[0]
+                        value = self.vf.compute(tf.expand_dims(observation, axis=0)).numpy()[0, 0]
                         observation_next, reward, done, _ = self.env.step(action)
                         self.replay_buffer.store_transition(observation, action, reward, value)
                         observation = observation_next
                         if done:
-                            value = self.vf.compute(observation.reshape(1, -1)).numpy()[0, 0]
+                            value = self.vf.compute(tf.expand_dims(observation, axis=0)).numpy()[0, 0]
                             self.replay_buffer.terminate_episode(observation, value)
                             break
 
