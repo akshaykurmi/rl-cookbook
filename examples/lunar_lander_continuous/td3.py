@@ -1,18 +1,18 @@
 import gym
 
-from examples.lunarlander_continuous.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
+from examples.lunar_lander_continuous.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
     QFunctionNetwork
-from rl.agents.ddpg.ddpg import DDPG
+from rl.agents.td3.td3 import TD3
 
 if __name__ == '__main__':
     args = parse_args()
-    ckpt_dir, log_dir = get_output_dirs('ddpg', args.mode == 'train')
+    ckpt_dir, log_dir = get_output_dirs('td3', args.mode == 'train')
 
     env = gym.make('LunarLanderContinuous-v2')
     policy_fn = lambda: PolicyNetwork(env.observation_space.shape, env.action_space.shape[0], env.action_space.high,
                                       env.action_space.low)
     qf_fn = lambda: QFunctionNetwork((env.observation_space.shape[0] + env.action_space.shape[0],))
-    agent = DDPG(
+    agent = TD3(
         env=env,
         policy_fn=policy_fn,
         qf_fn=qf_fn,
@@ -27,7 +27,10 @@ if __name__ == '__main__':
         update_every_steps=50,
         update_iterations=50,
         update_batch_size=32,
-        action_noise=0.1,
+        update_policy_delay=2,
+        transition_action_noise=0.1,
+        target_action_noise=0.2,
+        target_action_noise_clip=0.5,
         ckpt_episodes=100,
         log_episodes=1,
         ckpt_dir=ckpt_dir,
