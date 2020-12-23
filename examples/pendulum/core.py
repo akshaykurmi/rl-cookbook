@@ -4,6 +4,7 @@ import shutil
 from time import sleep
 
 import tensorflow as tf
+import tensorflow_probability as tfp
 
 
 class PolicyNetwork(tf.keras.Model):
@@ -15,7 +16,7 @@ class PolicyNetwork(tf.keras.Model):
 
         self.dense1 = tf.keras.layers.Dense(units=32, activation='relu', input_shape=input_shape)
         self.dense2 = tf.keras.layers.Dense(units=32, activation='relu')
-        self.dense3 = tf.keras.layers.Dense(units=output_dim, activation='linear')
+        self.dense3 = tf.keras.layers.Dense(units=output_dim, activation='tanh')
 
         self.call(tf.ones((1, *input_shape)))
 
@@ -28,7 +29,7 @@ class PolicyNetwork(tf.keras.Model):
         x = self.dense3(x)
         return x
 
-    def sample(self, observations, noise=None, noise_clip=None):
+    def sample(self, observations, noise=None, noise_clip=None, **kwargs):
         actions = self.call(observations)
         actions = (actions - self.action_min) / (self.action_max - self.action_min)
         actions = actions * (self.env_action_max - self.env_action_min) + self.env_action_min
@@ -65,6 +66,51 @@ class QFunctionNetwork(tf.keras.Model):
         return tf.squeeze(x)
 
 
+class PolicyNetworkSAC(tf.keras.Model):
+    def __init__(self, input_shape, output_dim, env_action_max, env_action_min):
+        super().__init__()
+        self.env_action_min = env_action_min
+        self.env_action_max = env_action_max
+
+        self.dense1 = tf.keras.layers.Dense(units=32, activation='relu', input_shape=input_shape)
+        self.dense2 = tf.keras.layers.Dense(units=32, activation='relu')
+        self.mean = tf.keras.layers.Dense(units=output_dim)
+        self.log_std = tf.keras.layers.Dense(units=output_dim)
+
+        self.call(tf.ones((1, *input_shape)))
+
+    def get_config(self):
+        super().get_config()
+
+    def call(self, observations, **kwargs):
+        x = self.dense1(observations)
+        x = self.dense2(x)
+        mean = self.mean(x)
+        log_std = self.log_std(x)
+        log_std = tf.clip_by_value(log_std, 2, -20)
+        std = tf.exp(log_std)
+        return mean, std
+
+    def sample(self, observations, deterministic=False, return_entropy=True, **kwargs):
+        mean, std = self.call(observations)
+        distribution = tfp.distributions.Normal(loc=mean, scale=std)
+        unscaled_actions = distribution.mean() if deterministic else distribution.sample()
+        actions = tf.tanh(unscaled_actions)
+        actions = (actions + 1) / 2  # scale to [0,1]
+        actions = actions * (self.env_action_max - self.env_action_min) + self.env_action_min
+        actions = tf.clip_by_value(actions, self.env_action_min, self.env_action_max)
+
+        if return_entropy:
+            entropy = distribution.log_prob(unscaled_actions)
+            entropy = tf.reduce_sum(entropy, axis=-1)
+            entropy -= tf.reduce_sum(2 * (tf.math.log(2.0) -
+                                          unscaled_actions -
+                                          tf.math.softplus(-2 * unscaled_actions)
+                                          ), axis=1)  # rescale due to tanh squashing
+            return actions, entropy
+        return actions
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['train', 'evaluate'], required=True, help='Train or evaluate the agent?')
@@ -86,7 +132,7 @@ def evaluate_policy(env, policy):
     done = False
     while not done:
         sleep(0.005)
-        action = policy.sample(observation.reshape(1, -1)).numpy()[0]
+        action = policy.sample(observation.reshape(1, -1), deterministic=True, return_entropy=False).numpy()[0]
         observation, reward, done, info = env.step(action)
         env.render()
     env.close()
