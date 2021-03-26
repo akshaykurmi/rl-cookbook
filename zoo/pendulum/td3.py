@@ -1,8 +1,8 @@
 import gym
 
-from examples.pendulum.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
+from rl.agents.td3 import TD3
+from zoo.pendulum.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
     QFunctionNetwork
-from rl.agents.td3.td3 import TD3
 
 if __name__ == '__main__':
     args = parse_args()

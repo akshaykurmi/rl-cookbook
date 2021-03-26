@@ -1,7 +1,7 @@
 import gym
 
-from examples.pendulum.core import parse_args, get_output_dirs, evaluate_policy, QFunctionNetwork, PolicyNetworkSAC
-from rl.agents.sac.sac import SAC
+from rl.agents.sac import SAC
+from zoo.pendulum.core import parse_args, get_output_dirs, evaluate_policy, QFunctionNetwork, PolicyNetworkSAC
 
 if __name__ == '__main__':
     args = parse_args()

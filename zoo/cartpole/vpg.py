@@ -1,7 +1,7 @@
 import gym
 
-from examples.cartpole.core import PolicyNetwork, parse_args, get_output_dirs, evaluate_policy
-from rl.agents.vpg.vpg import VPG
+from rl.agents.vpg import VPG
+from zoo.cartpole.core import PolicyNetwork, parse_args, get_output_dirs, evaluate_policy
 
 if __name__ == '__main__':
     args = parse_args()

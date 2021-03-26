@@ -1,14 +1,14 @@
 import gym
 
-from examples.lunar_lander_continuous.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
+from rl.agents.ddpg import DDPG
+from zoo.pendulum.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
     QFunctionNetwork
-from rl.agents.ddpg.ddpg import DDPG
 
 if __name__ == '__main__':
     args = parse_args()
     ckpt_dir, log_dir = get_output_dirs('ddpg', args.mode == 'train')
 
-    env = gym.make('LunarLanderContinuous-v2')
+    env = gym.make('Pendulum-v0')
     policy_fn = lambda: PolicyNetwork(env.observation_space.shape, env.action_space.shape[0], env.action_space.high,
                                       env.action_space.low)
     qf_fn = lambda: QFunctionNetwork((env.observation_space.shape[0] + env.action_space.shape[0],))
@@ -21,8 +21,8 @@ if __name__ == '__main__':
         gamma=0.99,
         polyak=0.995,
         episodes=10000,
-        max_episode_length=10000,
-        replay_buffer_size=100000,
+        max_episode_length=250,
+        replay_buffer_size=5000,
         initial_random_episodes=50,
         update_every_steps=50,
         update_iterations=50,

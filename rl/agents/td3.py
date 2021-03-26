@@ -1,20 +1,26 @@
 import tensorflow as tf
 from tqdm import tqdm
 
-from rl.metrics.average_episode_length import AverageEpisodeLength
-from rl.metrics.average_return import AverageReturn
+from rl.metrics import AverageEpisodeLength
+from rl.metrics import AverageReturn
 from rl.replay_buffer import UniformReplayBuffer
 
 
-class DDPG:
+class TD3:
     def __init__(self, env, policy_fn, qf_fn, lr_policy, lr_qf, gamma, polyak, episodes, max_episode_length,
                  replay_buffer_size, initial_random_episodes, update_every_steps, update_iterations, update_batch_size,
-                 action_noise, ckpt_episodes, log_episodes, ckpt_dir, log_dir):
+                 update_policy_delay, transition_action_noise, target_action_noise, target_action_noise_clip,
+                 ckpt_episodes, log_episodes, ckpt_dir, log_dir):
         self.env = env
         self.policy = policy_fn()
-        self.qf = qf_fn()
-        self.qf_target = qf_fn()
-        self.qf_target.set_weights(self.qf.get_weights())
+        self.qf1 = qf_fn()
+        self.qf2 = qf_fn()
+        self.policy_target = policy_fn()
+        self.qf1_target = qf_fn()
+        self.qf2_target = qf_fn()
+        self.policy_target.set_weights(self.policy.get_weights())
+        self.qf1_target.set_weights(self.qf1.get_weights())
+        self.qf2_target.set_weights(self.qf2.get_weights())
         self.lr_policy = lr_policy
         self.lr_qf = lr_qf
         self.gamma = gamma
@@ -26,7 +32,10 @@ class DDPG:
         self.update_every_steps = update_every_steps
         self.update_iterations = update_iterations
         self.update_batch_size = update_batch_size
-        self.action_noise = action_noise
+        self.update_policy_delay = update_policy_delay
+        self.transition_action_noise = transition_action_noise
+        self.target_action_noise = target_action_noise
+        self.target_action_noise_clip = target_action_noise_clip
         self.ckpt_episodes = ckpt_episodes
         self.log_episodes = log_episodes
         self.ckpt_dir = ckpt_dir
@@ -44,7 +53,9 @@ class DDPG:
         self.episodes_done = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.policy_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_policy)
         self.qf_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_qf)
-        self.ckpt = tf.train.Checkpoint(policy=self.policy, qf=self.qf, qf_target=self.qf_target,
+        self.ckpt = tf.train.Checkpoint(policy=self.policy, qf1=self.qf1, qf2=self.qf2,
+                                        policy_target=self.policy_target,
+                                        qf1_target=self.qf1_target, qf2_target=self.qf2_target,
                                         policy_optimizer=self.policy_optimizer, qf_optimizer=self.qf_optimizer,
                                         episodes_done=self.episodes_done)
         self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self.ckpt_dir, max_to_keep=1)
@@ -62,7 +73,8 @@ class DDPG:
                     if self.ckpt.episodes_done.numpy() <= self.initial_random_episodes:
                         action = self.env.action_space.sample()
                     else:
-                        action = self.policy.sample(observation.reshape(1, -1), noise=self.action_noise).numpy()[0]
+                        action = self.policy.sample(observation.reshape(1, -1),
+                                                    noise=self.transition_action_noise).numpy()[0]
                     observation_next, reward, done, _ = self.env.step(action)
                     transition = {'observation': observation, 'action': action, 'reward': reward,
                                   'observation_next': observation_next, 'done': done}
@@ -93,7 +105,7 @@ class DDPG:
 
     def _update(self):
         policy_losses, qf_losses = [], []
-        for _ in range(self.update_iterations):
+        for i in range(self.update_iterations):
             batch = self.replay_buffer.sample_batch(self.update_batch_size)
             observation = tf.convert_to_tensor(batch['observation'], tf.float32)
             action = tf.convert_to_tensor(batch['action'], tf.float32)
@@ -101,20 +113,30 @@ class DDPG:
             observation_next = tf.convert_to_tensor(batch['observation_next'], tf.float32)
             done = tf.convert_to_tensor(batch['done'], tf.float32)
             qf_losses.append(self._update_qf(observation, action, reward, observation_next, done))
-            policy_losses.append(self._update_policy(observation))
-            self._update_qf_target()
+            if i % self.update_policy_delay:
+                policy_losses.append(self._update_policy(observation))
+                self._update_targets()
         return tf.reduce_mean(policy_losses), tf.reduce_mean(qf_losses)
 
     @tf.function(experimental_relax_shapes=True)
     def _update_qf(self, observation, action, reward, observation_next, done):
         with tf.GradientTape(watch_accessed_variables=False) as tape:
-            tape.watch(self.qf.trainable_variables)
-            q = self.qf.compute(observation, action)
-            q_target = self.qf_target.compute(observation_next, self.policy.sample(observation_next))
+            tape.watch(self.qf1.trainable_variables)
+            tape.watch(self.qf2.trainable_variables)
+            q1 = self.qf1.compute(observation, action)
+            q2 = self.qf2.compute(observation, action)
+            target_action = self.policy_target.sample(observation_next, noise=self.target_action_noise,
+                                                      noise_clip=self.target_action_noise_clip)
+            q1_target = self.qf1_target.compute(observation_next, target_action)
+            q2_target = self.qf2_target.compute(observation_next, target_action)
+            q_target = tf.minimum(q1_target, q2_target)
             bellman_backup = reward + self.gamma * (1 - done) * q_target
-            loss = tf.keras.losses.mean_squared_error(q, bellman_backup)
-            gradients = tape.gradient(loss, self.qf.trainable_variables)
-            self.qf_optimizer.apply_gradients(zip(gradients, self.qf.trainable_variables))
+            q1_loss = tf.keras.losses.mean_squared_error(q1, bellman_backup)
+            q2_loss = tf.keras.losses.mean_squared_error(q2, bellman_backup)
+            loss = q1_loss + q2_loss
+            variables = self.qf1.trainable_variables + self.qf2.trainable_variables
+            gradients = tape.gradient(loss, variables)
+            self.qf_optimizer.apply_gradients(zip(gradients, variables))
         return loss
 
     @tf.function(experimental_relax_shapes=True)
@@ -122,14 +144,17 @@ class DDPG:
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             tape.watch(self.policy.trainable_variables)
             a = self.policy.sample(observation)
-            q = self.qf.compute(observation, a)
+            q = self.qf1.compute(observation, a)
             loss = -tf.reduce_mean(q)
             gradients = tape.gradient(loss, self.policy.trainable_variables)
             self.policy_optimizer.apply_gradients(zip(gradients, self.policy.trainable_variables))
         return loss
 
     @tf.function(experimental_relax_shapes=True)
-    def _update_qf_target(self):
-        for v1, v2 in zip(self.qf.trainable_variables, self.qf_target.trainable_variables):
-            v2.assign(tf.multiply(v2, self.polyak))
-            v2.assign_add(tf.multiply(v1, 1 - self.polyak))
+    def _update_targets(self):
+        for active, target in [(self.policy, self.policy_target),
+                               (self.qf1, self.qf1_target),
+                               (self.qf2, self.qf2_target)]:
+            for v1, v2 in zip(active.trainable_variables, target.trainable_variables):
+                v2.assign(tf.multiply(v2, self.polyak))
+                v2.assign_add(tf.multiply(v1, 1 - self.polyak))

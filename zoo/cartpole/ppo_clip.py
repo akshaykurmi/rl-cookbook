@@ -1,7 +1,7 @@
 import gym
 
-from examples.cartpole.core import PolicyNetwork, ValueFunctionNetwork, get_output_dirs, parse_args, evaluate_policy
-from rl.agents.ppo.ppo_clip import PPOClip
+from rl.agents.ppo_clip import PPOClip
+from zoo.cartpole.core import PolicyNetwork, ValueFunctionNetwork, get_output_dirs, parse_args, evaluate_policy
 
 if __name__ == '__main__':
     args = parse_args()

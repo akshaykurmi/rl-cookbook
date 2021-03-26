@@ -1,8 +1,8 @@
 import tensorflow as tf
 from tqdm import tqdm
 
-from rl.metrics.average_episode_length import AverageEpisodeLength
-from rl.metrics.average_return import AverageReturn
+from rl.metrics import AverageEpisodeLength
+from rl.metrics import AverageReturn
 from rl.replay_buffer import UniformReplayBuffer
 
 
