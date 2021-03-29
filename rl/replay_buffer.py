@@ -40,7 +40,7 @@ class ReplayBuffer(ABC):
         }
         store_field_names = {f.name for f in self.store_fields}
         for f in self.compute_fields:
-            dependencies = self.compute_config['dependencies'][f.name]
+            dependencies = self.compute_config[f.name]['dependencies']
             if not dependencies.issubset(store_field_names):
                 raise ValueError(f'Compute field {f.name} requires store fields {dependencies}')
 
@@ -158,7 +158,7 @@ class DeterministicReplayBuffer(ReplayBuffer):
 
         dataset = tf.data.Dataset.from_generator(
             data_generator,
-            output_types={f.name: tf.float32 for f in self.store_fields + self.compute_fields},
+            output_types={f.name: tf.as_dtype(f.dtype) for f in self.store_fields + self.compute_fields},
             output_shapes={f.name: f.shape for f in self.store_fields + self.compute_fields}
         )
         dataset = dataset.batch(batch_size)
@@ -181,7 +181,7 @@ class UniformReplayBuffer(ReplayBuffer):
 
         dataset = tf.data.Dataset.from_generator(
             data_generator,
-            output_types={f.name: tf.float32 for f in self.store_fields + self.compute_fields},
+            output_types={f.name: tf.as_dtype(f.dtype) for f in self.store_fields + self.compute_fields},
             output_shapes={f.name: f.shape for f in self.store_fields + self.compute_fields}
         )
         dataset = dataset.batch(batch_size)
