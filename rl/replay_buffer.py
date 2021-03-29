@@ -1,215 +1,188 @@
+import collections
+from abc import ABC, abstractmethod
+
 import numpy as np
+import scipy as sp
+import tensorflow as tf
+
+ReplayField = collections.namedtuple(
+    'ReplayField',
+    ['name', 'dtype', 'shape'],
+    defaults=[np.float32, ()]
+)
 
 
-class Episode:
-    def __init__(self, gamma, lambda_):
-        self.gamma = gamma
-        self.lambda_ = lambda_
-
-        self.observations = []
-        self.actions = []
-        self.rewards = []
-        self.values = []
-        self.is_done = False
-
-    @property
-    def empty(self):
-        return len(self.observations) == 0
-
-    @property
-    def length(self):
-        return len(self.rewards)
-
-    @property
-    def advantages(self):
-        deltas, coeffs, advantages = [], [], []
-        for t in range(len(self.rewards)):
-            deltas.append(self.rewards[t] + self.gamma * self.values[t + 1] - self.values[t])
-            coeffs.append(np.power(self.gamma * self.lambda_, t))
-        for t in range(len(self.rewards)):
-            advantages.append(np.sum([coeffs[i] * deltas[t + i] for i in range(len(self.rewards) - t)]))
-        return advantages
-
-    @property
-    def rewards_to_go(self):
-        coeffs = [np.power(self.gamma, t) for t in range(len(self.rewards))]
-        rewards_to_go = []
-        for t in range(len(self.rewards)):
-            rewards_to_go.append(np.sum([coeffs[i] * self.rewards[t + i] for i in range(len(self.rewards) - t)]))
-        return rewards_to_go
-
-    @property
-    def total_rewards(self):
-        episode_reward = np.sum(self.rewards)
-        return [episode_reward] * len(self.rewards)
-
-
-class ReplayBuffer:
-    def __init__(self, gamma=1.0, lambda_=1.0):
-        self.gamma = gamma
-        self.lambda_ = lambda_
-        self.episodes = []
-
-    def purge(self):
-        self.episodes = []
-
-    def store_transition(self, observation, action, reward, value=None):
-        if len(self.episodes) == 0 or self.episodes[-1].is_done:
-            self.episodes.append(Episode(self.gamma, self.lambda_))
-        episode = self.episodes[-1]
-        episode.observations.append(observation)
-        episode.actions.append(action)
-        episode.rewards.append(reward)
-        if value is not None:
-            episode.values.append(value)
-
-    def terminate_episode(self, observation, value=None):
-        episode = self.episodes[-1]
-        episode.is_done = True
-        episode.observations.append(observation)
-        if value is not None:
-            episode.values.append(value)
-
-    def get(self, fields):
-        if not all([e.is_done for e in self.episodes]):
-            raise RuntimeError('Cannot get. Some episodes have not terminated.')
-
-        data = {}
-
-        if 'observations' in fields:
-            data['observations'] = []
-            for e in self.episodes:
-                data['observations'].extend(e.observations[:-1])  # remove terminal observation
-
-        if 'actions' in fields:
-            data['actions'] = []
-            for e in self.episodes:
-                data['actions'].extend(e.actions)
-
-        if 'rewards' in fields:
-            data['rewards'] = []
-            for e in self.episodes:
-                data['rewards'].extend(e.rewards)
-
-        if 'values' in fields:
-            data['values'] = []
-            for e in self.episodes:
-                data['values'].extend(e.values[:-1])  # remove terminal value
-
-        if 'advantages' in fields:
-            data['advantages'] = []
-            for e in self.episodes:
-                data['advantages'].extend(e.advantages)
-
-        if 'rewards_to_go' in fields:
-            data['rewards_to_go'] = []
-            for e in self.episodes:
-                data['rewards_to_go'].extend(e.rewards_to_go)
-
-        if 'total_rewards' in fields:
-            data['total_rewards'] = []
-            for e in self.episodes:
-                data['total_rewards'].extend(e.total_rewards)
-
-        if 'episode_lengths' in fields:
-            data['episode_lengths'] = [e.length for e in self.episodes]
-
-        return data
-
-
-class UniformReplayBuffer:
-    def __init__(self, buffer_size, store_fields, compute_fields, gamma=None, lambda_=None):
-        self.max_size = buffer_size
+class ReplayBuffer(ABC):
+    def __init__(self, buffer_size, store_fields, compute_fields, gamma=1.0, lambda_=1.0):
+        self.buffer_size = buffer_size
         self.store_fields = store_fields
         self.compute_fields = compute_fields
         self.gamma = gamma
         self.lambda_ = lambda_
-        self.buffers, self.store_head, self.compute_head, self.size = None, None, None, None
+
+        self.compute_config = {
+            'advantage': {
+                'func': self._compute_advantage,
+                'dependencies': {'done', 'reward', 'value', 'value_next'}
+            },
+            'reward_to_go': {
+                'func': self._compute_reward_to_go,
+                'dependencies': {'done', 'reward'}
+            },
+            'episode_return': {
+                'func': self._compute_episode_return,
+                'dependencies': {'done', 'reward'}
+            },
+            'episode_length': {
+                'func': self._compute_episode_length,
+                'dependencies': {'done'}
+            },
+        }
+        store_field_names = {f.name for f in self.store_fields}
+        for f in self.compute_fields:
+            dependencies = self.compute_config['dependencies'][f.name]
+            if not dependencies.issubset(store_field_names):
+                raise ValueError(f'Compute field {f.name} requires store fields {dependencies}')
+
+        self.store_buffers, self.compute_buffers = None, None
+        self.store_head, self.compute_head, self.current_size = None, None, None
         self.purge()
 
+    @abstractmethod
+    def as_dataset(self, *args, **kwargs):
+        self._compute()
+
     def purge(self):
-        self.buffers = {name: [None] * self.max_size for name in self.store_fields + self.compute_fields}
-        self.store_head, self.compute_head, self.size = 0, 0, 0
+        def create_empty_buffers(fields):
+            return {f.name: np.empty((self.buffer_size, *f.shape), dtype=f.dtype)
+                    for f in fields}
+
+        self.store_buffers = create_empty_buffers(self.store_fields)
+        self.compute_buffers = create_empty_buffers(self.compute_fields)
+        self.store_head, self.compute_head, self.current_size = 0, 0, 0
 
     def store_transition(self, transition):
-        if not all([k in self.store_fields for k in transition.keys()]):
+        if not all([k in self.store_buffers.keys() for k in transition.keys()]):
             raise ValueError('Invalid transition')
         for name, data in transition.items():
-            self.buffers[name][self.store_head] = data
+            self.store_buffers[name][self.store_head] = data
         self.store_head = self._increment(self.store_head)
-        self.size = min(self.size + 1, self.max_size)
-
-    def sample_batch(self, batch_size):
-        self._compute()
-        indexes = np.random.randint(0, self.size, size=batch_size)
-        batch = {name: [] for name in self.buffers.keys()}
-        for i in indexes:
-            for name in self.buffers.keys():
-                batch[name].append(self.buffers[name][i])
-        return batch
-
-    def fetch_all(self):
-        self._compute()
-        return {name: buffer[name][:self.size]
-                for name, buffer in self.buffers.items()}
+        self.current_size = min(self.current_size + 1, self.buffer_size)
 
     def _compute(self):
         if self.compute_head == self.store_head:
             return
 
-        while True:
-            compute_tail = self.compute_head
-            while self.buffers['done'][compute_tail] is False:
-                next_tail = self._increment(compute_tail)
-                if next_tail == self.store_head:
-                    break
-                compute_tail = next_tail
+        indices = self._circular_indices(self.compute_head, self._decrement(self.store_head))
+        tail_indices = indices[self.store_buffers['done'][indices]]
+        if self.store_buffers['done'][indices[-1]] is False:  # Add the last index which might not be done
+            tail_indices = np.concatenate((tail_indices, [indices[-1]]))
 
-            if 'advantage' in self.compute_fields:
-                # TODO: calculate advantage with rewards to go?
-                deltas, coeffs = [], []
-                for t, buf_i in enumerate(self._crange(self.compute_head, compute_tail)):
-                    deltas.append(self.buffers['reward'][buf_i] +
-                                  self.gamma * self.buffers['value_next'][buf_i] -
-                                  self.buffers['value'][buf_i])
-                    coeffs.append(np.power(self.gamma * self.lambda_, t))
-                for t, buf_i in enumerate(self._crange(self.compute_head, compute_tail)):
-                    self.buffers['advantage'][buf_i] = np.sum([
-                        coeffs[i] * deltas[t + i]
-                        for i in range(len(deltas) - t)
-                    ])
+        for i, compute_tail in enumerate(tail_indices):
+            for f in self.compute_fields:
+                self.compute_config[f.name]['func'](compute_tail)
+            # If the last index is not done, do not move the compute_head
+            if i < len(tail_indices) - 1 or self.store_buffers['done'][compute_tail]:
+                self.compute_head = self._increment(compute_tail)
 
-            if 'reward_to_go' in self.compute_fields:
-                rewards, coeffs = [], []
-                for t, buf_i in enumerate(self._crange(self.compute_head, compute_tail)):
-                    rewards.append(self.buffers['reward'][buf_i])
-                    coeffs.append(np.power(self.gamma, t))
-                for t, buf_i in enumerate(self._crange(self.compute_head, compute_tail)):
-                    self.buffers['reward_to_go'][buf_i] = np.sum([
-                        coeffs[i] * rewards[t + i]
-                        for i in range(len(rewards) - t)
-                    ])
+    def _compute_advantage(self, compute_tail):
+        indices = self._circular_indices(self.compute_head, compute_tail)
+        rewards = self.store_buffers['reward'][indices]
+        values = self.store_buffers['value'][indices]
+        value_nexts = self.store_buffers['value_next'][indices]
+        deltas = rewards + self.gamma * value_nexts - values
+        self.compute_buffers['advantage'][indices] = self._discounted_cumsum(deltas, self.gamma * self.lambda_)
 
-            if 'episode_return' in self.compute_fields:
-                episode_return = 0.0
-                for buf_i in self._crange(self.compute_head, compute_tail):
-                    episode_return += self.buffers['reward'][buf_i]
-                for buf_i in self._crange(self.compute_head, compute_tail):
-                    self.buffers['episode_return'][buf_i] = episode_return
+    def _compute_reward_to_go(self, compute_tail):
+        indices = self._circular_indices(self.compute_head, compute_tail)
+        rewards = self.store_buffers['reward'][indices]
+        self.compute_buffers['reward_to_go'][indices] = self._discounted_cumsum(rewards, self.gamma)
 
-            if self._increment(compute_tail) == self.store_head:
-                if self.buffers['done'][compute_tail] is True:
-                    self.compute_head = self.store_head
-                break
-            self.compute_head = self._increment(compute_tail)
+    def _compute_episode_return(self, compute_tail):
+        indices = self._circular_indices(self.compute_head, compute_tail)
+        episode_return = np.sum(self.store_buffers['reward'][indices])
+        self.compute_buffers['episode_return'][indices] = episode_return
 
-    def _increment(self, ptr):
-        return (ptr + 1) % self.max_size
+    def _compute_episode_length(self, compute_tail):
+        length = self._circular_length(self.compute_head, compute_tail)
+        indices = self._circular_indices(self.compute_head, compute_tail)
+        self.compute_buffers['episode_length'][indices] = length
 
-    def _decrement(self, ptr):
-        return ptr - 1 if ptr > 0 else self.max_size - 1
+    def _circular_length(self, head, tail):
+        length = tail - head + 1
+        if head > tail:
+            length += self.buffer_size
+        return length
 
-    def _crange(self, start, end):
-        while start != self._increment(end):
-            yield start
-            start = self._increment(start)
+    def _circular_indices(self, head, tail):
+        length = self._circular_length(head, tail)
+        return np.arange(head, head + length) % self.buffer_size
+
+    @staticmethod
+    def _discounted_cumsum(values, discount):
+        """
+        Example:
+        values = [1,2,3], discount = 0.9
+        returns = [1 * 0.9^0 + 2 * 0.9^1 + 3 * 0.9^3,
+                   2 * 0.9^0 + 3 * 0.9^1,
+                   3 * 0.9^0]
+        """
+        return sp.signal.lfilter([1], [1, float(-discount)], values[::-1], axis=0)[::-1]
+
+    def _increment(self, ptr, n=1):
+        n = n % self.buffer_size
+        return (ptr + n) % self.buffer_size
+
+    def _decrement(self, ptr, n=1):
+        n = n % self.buffer_size
+        ptr = ptr - n
+        if ptr < 0:
+            ptr += self.buffer_size
+        return ptr
+
+
+class DeterministicReplayBuffer(ReplayBuffer):
+    def as_dataset(self, num_batches=1, batch_size=None):
+        super().as_dataset()
+        batch_size = batch_size or self.current_size
+
+        def data_generator():
+            nonlocal batch_size
+            fetch_head = self.store_head if self.current_size == self.buffer_size else 0
+            for _ in range(num_batches * batch_size):
+                store_data = {k: buf[fetch_head] for k, buf in self.store_buffers.items()}
+                compute_data = {k: buf[fetch_head] for k, buf in self.compute_buffers.items()}
+                yield {**store_data, **compute_data}
+                fetch_head = self._increment(fetch_head)
+
+        dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_types={f.name: tf.float32 for f in self.store_fields + self.compute_fields},
+            output_shapes={f.name: f.shape for f in self.store_fields + self.compute_fields}
+        )
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
+        return dataset
+
+
+class UniformReplayBuffer(ReplayBuffer):
+    def as_dataset(self, num_batches=1, batch_size=None):
+        super().as_dataset()
+        batch_size = batch_size or self.current_size
+
+        def data_generator():
+            nonlocal batch_size
+            for _ in range(num_batches * batch_size):
+                idx = np.random.randint(0, self.current_size)
+                store_data = {k: buf[idx] for k, buf in self.store_buffers.items()}
+                compute_data = {k: buf[idx] for k, buf in self.compute_buffers.items()}
+                yield {**store_data, **compute_data}
+
+        dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_types={f.name: tf.float32 for f in self.store_fields + self.compute_fields},
+            output_shapes={f.name: f.shape for f in self.store_fields + self.compute_fields}
+        )
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
+        return dataset
