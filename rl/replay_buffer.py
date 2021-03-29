@@ -57,8 +57,9 @@ class ReplayBuffer(ABC):
             return {f.name: np.empty((self.buffer_size, *f.shape), dtype=f.dtype)
                     for f in fields}
 
-        self.store_buffers = create_empty_buffers(self.store_fields)
-        self.compute_buffers = create_empty_buffers(self.compute_fields)
+        if self.store_buffers is None and self.compute_buffers is None:
+            self.store_buffers = create_empty_buffers(self.store_fields)
+            self.compute_buffers = create_empty_buffers(self.compute_fields)
         self.store_head, self.compute_head, self.current_size = 0, 0, 0
 
     def store_transition(self, transition):
