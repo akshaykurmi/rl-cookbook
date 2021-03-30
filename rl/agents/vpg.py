@@ -36,12 +36,13 @@ class VPG:
         observation = previous_transition['observation_next'] if previous_transition else self.env.reset()
         action = self.policy.sample(tf.expand_dims(observation, axis=0)).numpy()[0]
         observation_next, reward, done, _ = self.env.step(action)
-        transition = {'observation': observation, 'action': action, 'reward': reward, 'done': done}
+        transition = {'observation': observation, 'observation_next': observation_next,
+                      'action': action, 'reward': reward, 'done': done}
         if training:
             self.replay_buffer.store_transition(transition)
             for m in self.metrics:
                 m.record(transition)
-        return {'observation_next': observation_next, **transition}
+        return transition
 
     def update(self):
         dataset = self.replay_buffer.as_dataset(num_batches=1, batch_size=None)

@@ -63,10 +63,8 @@ class ReplayBuffer(ABC):
         self.store_head, self.compute_head, self.current_size = 0, 0, 0
 
     def store_transition(self, transition):
-        if not all([k in self.store_buffers.keys() for k in transition.keys()]):
-            raise ValueError('Invalid transition')
-        for name, data in transition.items():
-            self.store_buffers[name][self.store_head] = data
+        for f in self.store_fields:
+            self.store_buffers[f.name][self.store_head] = transition[f.name]
         self.store_head = self._increment(self.store_head)
         self.current_size = min(self.current_size + 1, self.buffer_size)
 
