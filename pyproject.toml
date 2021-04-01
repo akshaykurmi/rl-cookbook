@@ -16,6 +16,10 @@ gym = {extras = ["atari"], version = "^0.18.0"}
 jupyterlab = "^3.0.12"
 pytest = "^6.2.2"
 
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-vs -ra"
+
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
