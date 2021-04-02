@@ -8,7 +8,6 @@ class VPG:
     def __init__(self, env, policy_fn, lr, replay_buffer_size):
         self.env = env
         self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
-        self.lr = lr
 
         self.replay_buffer = DeterministicReplayBuffer(
             buffer_size=replay_buffer_size,
@@ -22,7 +21,7 @@ class VPG:
                 ReplayField('episode_return'),
             ],
         )
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
     def variables_to_checkpoint(self):
         return {'policy': self.policy, 'optimizer': self.optimizer}
