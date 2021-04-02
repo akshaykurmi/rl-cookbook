@@ -1,7 +1,8 @@
-import collections
 from abc import ABC, abstractmethod
 
 import numpy as np
+
+from rl.utils import RingBuffer
 
 
 class Metric(ABC):
@@ -23,43 +24,40 @@ class Metric(ABC):
 
 
 class AverageReturn(Metric):
-    def __init__(self, buffer_size, name='average_return'):
+    def __init__(self, buffer_size=10, name='average_return'):
         super().__init__(buffer_size, name)
-        self.reward = collections.deque(maxlen=self.buffer_size)
-        self.done = collections.deque(maxlen=self.buffer_size)
+        self.returns = RingBuffer(self.buffer_size, (), np.float32)
+        self.current_return = 0.0
 
     def reset(self):
-        self.reward.clear()
-        self.done.clear()
+        self.returns.purge()
+        self.current_return = 0.0
 
     def record(self, transition):
-        self.reward.append(transition['reward'])
-        self.done.append(transition['done'])
+        self.current_return += transition['reward']
+        if transition['done']:
+            self.returns.append(self.current_return)
+            self.current_return = 0
 
     def compute(self):
-        returns = [0.0]
-        for i, (r, d) in enumerate(zip(self.reward, self.done)):
-            returns[-1] += r
-            if d and i != len(self.reward) - 1:
-                returns.append(0.0)
-        return np.mean(returns)
+        return np.mean(self.returns[:])
 
 
 class AverageEpisodeLength(Metric):
-    def __init__(self, buffer_size, name='average_episode_length'):
+    def __init__(self, buffer_size=10, name='average_episode_length'):
         super().__init__(buffer_size, name)
-        self.done = collections.deque(maxlen=self.buffer_size)
+        self.episode_lengths = RingBuffer(self.buffer_size, (), np.float32)
+        self.current_length = 0.0
 
     def reset(self):
-        self.done.clear()
+        self.episode_lengths.purge()
+        self.current_length = 0.0
 
     def record(self, transition):
-        self.done.append(transition['done'])
+        self.current_length += 1
+        if transition['done']:
+            self.episode_lengths.append(self.current_length)
+            self.current_length = 0.0
 
     def compute(self):
-        lengths = [0.0]
-        for i, d in enumerate(self.done):
-            lengths[-1] += 1
-            if d and i != len(self.done) - 1:
-                lengths.append(0.0)
-        return np.mean(lengths)
+        return np.mean(self.episode_lengths[:])
