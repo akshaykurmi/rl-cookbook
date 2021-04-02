@@ -52,8 +52,6 @@ class VPG:
             **{m.name: m.compute() for m in self.metrics},
         }
         self.replay_buffer.purge()
-        for metric in self.metrics:
-            metric.reset()
         return result
 
     @tf.function(experimental_relax_shapes=True)

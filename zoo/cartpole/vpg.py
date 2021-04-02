@@ -13,7 +13,7 @@ if __name__ == '__main__':
         policy_fn=PolicyNetwork,
         lr=1e-3,
         replay_buffer_size=250 * 2,
-        metrics_buffer_size=250 * 2,
+        metrics_buffer_size=2,
     )
     train_loop = EpisodeTrainLoop(
         agent=agent,
