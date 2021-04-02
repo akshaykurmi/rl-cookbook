@@ -1,133 +1,112 @@
+import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tqdm import tqdm
 
-from rl.replay_buffer import ReplayBuffer
+from rl.replay_buffer import ReplayField, DeterministicReplayBuffer
 
 
 class TRPO:
-    def __init__(self, env, policy_fn, vf_fn, lr_vf, gamma, lambda_, delta, epochs, episodes_per_epoch,
-                 max_episode_length, vf_update_iterations, conjugate_gradient_iterations, conjugate_gradient_tol,
-                 line_search_iterations, line_search_coefficient, ckpt_epochs, log_epochs, ckpt_dir, log_dir):
+    def __init__(self, env, policy_fn, vf_fn, lr_vf, gamma, lambda_, delta, replay_buffer_size,
+                 vf_update_iterations, conjugate_gradient_iterations, conjugate_gradient_tol,
+                 line_search_iterations, line_search_coefficient):
         self.env = env
         self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
         self.vf = vf_fn(env.observation_space.shape)
-        self.lr_vf = lr_vf
         self.gamma = gamma
         self.lambda_ = lambda_
         self.delta = delta
-        self.epochs = epochs
-        self.episodes_per_epoch = episodes_per_epoch
-        self.max_episode_length = max_episode_length
         self.vf_update_iterations = vf_update_iterations
         self.conjugate_gradient_iterations = conjugate_gradient_iterations
         self.conjugate_gradient_tol = conjugate_gradient_tol
         self.line_search_iterations = line_search_iterations
         self.line_search_coefficient = line_search_coefficient
-        self.ckpt_epochs = ckpt_epochs
-        self.log_epochs = log_epochs
-        self.ckpt_dir = ckpt_dir
-        self.log_dir = log_dir
 
-        self.replay_buffer = ReplayBuffer(self.gamma, self.lambda_)
-        self.epochs_done = tf.Variable(0, dtype=tf.int64, trainable=False)
-        self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_vf)
-        self.ckpt = tf.train.Checkpoint(policy=self.policy, vf=self.vf,
-                                        vf_optimizer=self.vf_optimizer, epochs_done=self.epochs_done)
-        self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self.ckpt_dir, max_to_keep=1)
-        self.ckpt.restore(self.ckpt_manager.latest_checkpoint).expect_partial()
+        self.replay_buffer = DeterministicReplayBuffer(
+            buffer_size=replay_buffer_size,
+            store_fields=[
+                ReplayField('observation', shape=self.env.observation_space.shape),
+                ReplayField('action', dtype=np.int32),
+                ReplayField('reward'),
+                ReplayField('value'),
+                ReplayField('value_next'),
+                ReplayField('done', dtype=np.bool),
+            ],
+            compute_fields=[
+                ReplayField('advantage'),
+                ReplayField('reward_to_go'),
+            ],
+            gamma=gamma,
+            lambda_=lambda_,
+        )
+        self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_vf)
 
-    def train(self):
-        summary_writer = tf.summary.create_file_writer(self.log_dir)
-        with tqdm(total=self.epochs, desc='Training', unit='epoch') as pbar:
-            pbar.update(self.ckpt.epochs_done.numpy())
-            while self.ckpt.epochs_done.numpy() <= self.epochs:
-                self.replay_buffer.purge()
-                for episode in range(self.episodes_per_epoch):
-                    observation = self.env.reset()
-                    for step in range(self.max_episode_length):
-                        action = self.policy.sample(observation.reshape(1, -1)).numpy()[0]
-                        value = self.vf.compute(observation.reshape(1, -1)).numpy()[0, 0]
-                        observation_next, reward, done, _ = self.env.step(action)
-                        self.replay_buffer.store_transition(observation, action, reward, value)
-                        observation = observation_next
-                        if done:
-                            value = self.vf.compute(observation.reshape(1, -1)).numpy()[0, 0]
-                            self.replay_buffer.terminate_episode(observation, value)
-                            break
+    def variables_to_checkpoint(self):
+        return {'policy': self.policy, 'vf': self.vf, 'vf_optimizer': self.vf_optimizer}
 
-                data = self.replay_buffer.get(['observations', 'actions', 'advantages', 'rewards_to_go',
-                                               'total_rewards', 'episode_lengths'])
+    def step(self, previous_transition=None, training=False):
+        observation = previous_transition['observation_next'] if previous_transition else self.env.reset()
+        value = previous_transition['value_next'] if previous_transition else \
+            self.vf.compute(tf.expand_dims(observation, axis=0)).numpy()[0, 0]
+        action = self.policy.sample(tf.expand_dims(observation, axis=0)).numpy()[0]
+        observation_next, reward, done, _ = self.env.step(action)
+        value_next = self.vf.compute(tf.expand_dims(observation_next, axis=0)).numpy()[0, 0]
+        transition = {'observation': observation, 'observation_next': observation_next,
+                      'action': action, 'reward': reward, 'value': value, 'value_next': value_next, 'done': done}
+        if training:
+            self.replay_buffer.store_transition(transition)
+        return transition
 
-                policy_loss = self._update_policy(
-                    observations=tf.convert_to_tensor(data['observations'], tf.float32),
-                    actions=tf.convert_to_tensor(data['actions'], tf.int32),
-                    advantages=tf.convert_to_tensor(data['advantages'], tf.float32)
-                )
-                vf_loss = self._update_vf(
-                    observations=tf.convert_to_tensor(data['observations'], tf.float32),
-                    rewards_to_go=tf.convert_to_tensor(data['rewards_to_go'], tf.float32)
-                )
+    def update(self):
+        dataset = self.replay_buffer.as_dataset(num_batches=1, batch_size=None)
+        data = next(iter(dataset))
+        result = {
+            'policy_loss': self._update_policy(data['observation'], data['action'], data['advantage']),
+            'vf_loss': self._update_vf(data['observation'], data['reward_to_go']),
+        }
+        self.replay_buffer.purge()
+        return result
 
-                e = self.ckpt.epochs_done.numpy()
-                if e % self.ckpt_epochs == 0 or e == self.epochs:
-                    self.ckpt_manager.save()
-                if e % self.log_epochs == 0 or e == self.epochs:
-                    with summary_writer.as_default(), tf.name_scope('training'):
-                        tf.summary.scalar('total_rewards', tf.reduce_mean([tf.reduce_mean(t) for t in tf.split(
-                            data['total_rewards'], data['episode_lengths']
-                        )]), step=self.ckpt.epochs_done)
-                        tf.summary.scalar('episode_lengths', tf.reduce_mean(data['episode_lengths']),
-                                          step=self.ckpt.epochs_done)
-                        tf.summary.scalar('policy_loss', policy_loss, step=self.ckpt.epochs_done)
-                        tf.summary.scalar('vf_loss', vf_loss, step=self.ckpt.epochs_done)
-
-                self.ckpt.epochs_done.assign_add(1)
-                pbar.update(1)
-            self.env.close()
-
-    def _update_policy(self, observations, actions, advantages):
-        advantages -= tf.reduce_mean(advantages)
-        advantages /= tf.math.reduce_std(advantages) + 1e-8
-        log_probs_old = self.policy.log_prob(observations, actions)
-        distribution_old = self.policy.distribution(observations)
+    def _update_policy(self, observation, action, advantage):
+        advantage -= tf.reduce_mean(advantage)
+        advantage /= tf.math.reduce_std(advantage) + 1e-8
+        log_probs_old = self.policy.log_prob(observation, action)
+        distribution_old = self.policy.distribution(observation)
 
         with tf.GradientTape() as tape:
-            loss_old = self._surrogate_loss(observations, actions, advantages, log_probs_old)
+            loss_old = self._surrogate_loss(observation, action, advantage, log_probs_old)
             gradients = tape.gradient(loss_old, self.policy.trainable_variables)
             gradients = tf.concat([tf.reshape(g, [-1]) for g in gradients], axis=0)
 
-        Ax = lambda v: self._fisher_vector_product(v, observations, distribution_old)
+        Ax = lambda v: self._fisher_vector_product(v, observation, distribution_old)
         step_direction = self._conjugate_gradient(Ax, gradients)
-
-        loss = self._line_search(observations, actions, advantages, Ax, step_direction, distribution_old, log_probs_old,
-                                 loss_old)
+        loss = self._line_search(observation, action, advantage, Ax, step_direction,
+                                 distribution_old, log_probs_old, loss_old)
         return loss
 
     @tf.function(experimental_relax_shapes=True)
-    def _update_vf(self, observations, rewards_to_go):
+    def _update_vf(self, observation, reward_to_go):
         losses = []
         for i in range(self.vf_update_iterations):
             with tf.GradientTape() as tape:
-                values = self.vf.compute(observations)
-                loss = tf.keras.losses.mean_squared_error(rewards_to_go, tf.squeeze(values))
+                values = self.vf.compute(observation)
+                loss = tf.keras.losses.mean_squared_error(reward_to_go, tf.squeeze(values))
                 gradients = tape.gradient(loss, self.vf.trainable_variables)
                 self.vf_optimizer.apply_gradients(zip(gradients, self.vf.trainable_variables))
                 losses.append(loss)
         return tf.reduce_mean(losses)
 
-    def _surrogate_loss(self, observations, actions, advantages, log_probs_old):
-        log_probs = self.policy.log_prob(observations, actions)
+    def _surrogate_loss(self, observation, action, advantage, log_probs_old):
+        log_probs = self.policy.log_prob(observation, action)
         importance_sampling_weight = tf.exp(log_probs - log_probs_old)
-        return -tf.reduce_mean(importance_sampling_weight * advantages)
+        return -tf.reduce_mean(importance_sampling_weight * advantage)
 
-    def _kl_divergence(self, observations, distribution_old):
-        distribution = self.policy.distribution(observations)
+    def _kl_divergence(self, observation, distribution_old):
+        distribution = self.policy.distribution(observation)
         return tf.reduce_mean(tfp.distributions.kl_divergence(distribution_old, distribution))
 
-    def _fisher_vector_product(self, v, observations, distribution_old):
+    def _fisher_vector_product(self, v, observation, distribution_old):
         with tf.GradientTape(persistent=True) as tape:
-            kl = self._kl_divergence(observations, distribution_old)
+            kl = self._kl_divergence(observation, distribution_old)
             gradients = tape.gradient(kl, self.policy.trainable_variables)
             gradients = tf.concat([tf.reshape(g, [-1]) for g in gradients], axis=0)
             grad_vector_product = tf.reduce_sum(gradients * v)
@@ -152,8 +131,8 @@ class TRPO:
                 break
         return x
 
-    def _line_search(self, observations, actions, advantages, Ax, step_direction, distribution_old, log_probs_old,
-                     loss_old):
+    def _line_search(self, observation, action, advantage, Ax, step_direction,
+                     distribution_old, log_probs_old, loss_old):
         sAs = tf.tensordot(step_direction, Ax(step_direction), 1)
         beta = tf.math.sqrt((2 * self.delta) / (sAs + 1e-8))
 
@@ -165,8 +144,8 @@ class TRPO:
         for i in range(self.line_search_iterations):
             theta = [w - beta * sd * (self.line_search_coefficient ** i) for w, sd in zip(theta_old, step_direction)]
             self.policy.set_weights(theta)
-            kl = self._kl_divergence(observations, distribution_old)
-            loss = self._surrogate_loss(observations, actions, advantages, log_probs_old)
+            kl = self._kl_divergence(observation, distribution_old)
+            loss = self._surrogate_loss(observation, action, advantage, log_probs_old)
             if kl <= self.delta and loss <= loss_old:
                 return loss
             if i == self.line_search_iterations - 1:
