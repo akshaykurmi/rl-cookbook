@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 class EpisodeTrainLoop:
     def __init__(self, agent, n_episodes, max_episode_length, ckpt_dir, log_dir,
-                 ckpt_every, log_every, update_every):
+                 ckpt_every, log_every, update_every, metrics):
         self.agent = agent
         self.n_episodes = n_episodes
         self.max_episode_length = max_episode_length
@@ -13,6 +13,7 @@ class EpisodeTrainLoop:
         self.ckpt_every = ckpt_every
         self.log_every = log_every
         self.update_every = update_every
+        self.metrics = metrics
 
         self.episodes_done = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.ckpt = tf.train.Checkpoint(episodes_done=self.episodes_done, **agent.variables_to_checkpoint())
@@ -29,17 +30,22 @@ class EpisodeTrainLoop:
                 transition = None
                 for step in range(self.max_episode_length):
                     transition = self.agent.step(transition, training=True)
+                    for m in self.metrics:
+                        m.record(transition)
                     if transition['done']:
                         break
                 e = self.ckpt.episodes_done.numpy()
                 if e % self.update_every == 0 or e == self.n_episodes:
-                    losses_and_metrics = self.agent.update()
+                    losses = self.agent.update()
                 if e % self.ckpt_every == 0 or e == self.n_episodes:
                     self.ckpt_manager.save()
                 if e % self.log_every == 0 or e == self.n_episodes:
-                    with summary_writer.as_default(), tf.name_scope('training'):
-                        for k, v in losses_and_metrics.items():
+                    with summary_writer.as_default(), tf.name_scope('losses'):
+                        for k, v in losses.items():
                             tf.summary.scalar(k, v, step=e)
+                    with summary_writer.as_default(), tf.name_scope('metrics'):
+                        for m in self.metrics:
+                            tf.summary.scalar(m.name, m.compute(), step=e)
 
                 self.ckpt.episodes_done.assign_add(1)
                 pbar.update(1)

@@ -1,12 +1,11 @@
 import numpy as np
 import tensorflow as tf
 
-from rl.metrics import AverageReturn, AverageEpisodeLength
 from rl.replay_buffer import DeterministicReplayBuffer, ReplayField
 
 
 class VPG:
-    def __init__(self, env, policy_fn, lr, replay_buffer_size, metrics_buffer_size):
+    def __init__(self, env, policy_fn, lr, replay_buffer_size):
         self.env = env
         self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
         self.lr = lr
@@ -23,10 +22,6 @@ class VPG:
                 ReplayField('episode_return'),
             ],
         )
-        self.metrics = [
-            AverageReturn(metrics_buffer_size),
-            AverageEpisodeLength(metrics_buffer_size),
-        ]
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
 
     def variables_to_checkpoint(self):
@@ -40,8 +35,6 @@ class VPG:
                       'action': action, 'reward': reward, 'done': done}
         if training:
             self.replay_buffer.store_transition(transition)
-            for m in self.metrics:
-                m.record(transition)
         return transition
 
     def update(self):
@@ -49,7 +42,6 @@ class VPG:
         data = next(iter(dataset))
         result = {
             'policy_loss': self._update_policy(data['observation'], data['action'], data['episode_return']),
-            **{m.name: m.compute() for m in self.metrics},
         }
         self.replay_buffer.purge()
         return result
