@@ -1,6 +1,8 @@
 import gym
 
 from rl.agents.vpg_gae import VPGGAE
+from rl.loops import EpisodeTrainLoop
+from rl.metrics import AverageReturn, AverageEpisodeLength
 from zoo.cartpole.core import PolicyNetwork, ValueFunctionNetwork, get_output_dirs, parse_args, evaluate_policy
 
 if __name__ == '__main__':
@@ -15,17 +17,22 @@ if __name__ == '__main__':
         lr_vf=1e-3,
         gamma=0.98,
         lambda_=0.96,
-        epochs=500,
-        episodes_per_epoch=2,
-        max_episode_length=250,
         vf_update_iterations=20,
-        ckpt_epochs=10,
-        log_epochs=1,
+        replay_buffer_size=250 * 2,
+    )
+    train_loop = EpisodeTrainLoop(
+        agent=agent,
+        n_episodes=1000,
+        max_episode_length=250,
         ckpt_dir=ckpt_dir,
-        log_dir=log_dir
+        log_dir=log_dir,
+        ckpt_every=100,
+        log_every=10,
+        update_every=2,
+        metrics=[AverageReturn(2), AverageEpisodeLength(2)]
     )
 
     if args.mode == 'train':
-        agent.train()
+        train_loop.run()
     if args.mode == 'evaluate':
         evaluate_policy(agent.env, agent.policy)
