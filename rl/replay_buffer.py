@@ -2,7 +2,7 @@ import collections
 from abc import ABC, abstractmethod
 
 import numpy as np
-import scipy as sp
+import scipy.signal
 import tensorflow as tf
 
 from rl.utils import RingBuffer
@@ -114,7 +114,7 @@ class ReplayBuffer(ABC):
                    2 * 0.9^0 + 3 * 0.9^1,
                    3 * 0.9^0]
         """
-        return sp.signal.lfilter([1], [1, float(-discount)], values[::-1], axis=0)[::-1]
+        return scipy.signal.lfilter([1], [1, float(-discount)], values[::-1], axis=0)[::-1]
 
 
 class DeterministicReplayBuffer(ReplayBuffer):
