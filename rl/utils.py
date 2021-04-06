@@ -1,4 +1,5 @@
 import numpy as np
+import tensorflow as tf
 
 
 class RingBuffer:
@@ -70,3 +71,40 @@ class RingBuffer:
     def _circular_indices(self, head, tail, step=1):
         length = self._circular_length(head, tail)
         return np.arange(head, head + length, step) % self.buffer_size
+
+
+class GradientAccumulator:
+    def __init__(self, method='sum'):
+        if method not in {'sum', 'mean'}:
+            raise ValueError('Aggregation method should be "sum" or "mean"')
+        self._method = method
+        self._gradients = None
+        self._step = None
+        self.reset()
+
+    def reset(self):
+        self._gradients = []
+        self._step = tf.Variable(tf.constant(0, dtype=tf.int64), trainable=False)
+
+    def add(self, gradients):
+        if not self._gradients:
+            self._gradients.extend([tf.Variable(tf.zeros_like(gradient), trainable=False)
+                                    for gradient in gradients])
+        if len(gradients) != len(self._gradients):
+            raise ValueError(f'Expected {len(self._gradients)} gradients, but got {len(gradients)}')
+        for acc, gradient in zip(self._gradients, gradients):
+            acc.assign_add(gradient, read_value=False)
+        self._step.assign_add(1)
+
+    @property
+    def step(self):
+        return self._step.value()
+
+    @property
+    def gradients(self):
+        if not self._gradients:
+            raise ValueError('No gradients have been accumulated yet')
+        grads = list(gradient.value() for gradient in self._gradients)
+        if self._method == 'mean':
+            grads = [gradient / self._step for gradient in grads]
+        return grads
