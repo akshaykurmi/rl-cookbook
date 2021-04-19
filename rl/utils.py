@@ -74,19 +74,11 @@ class RingBuffer:
 
 
 class GradientAccumulator:
-    def __init__(self, method='sum'):
-        if method not in {'sum', 'mean'}:
-            raise ValueError('Aggregation method should be "sum" or "mean"')
-        self._method = method
-        self._gradients = None
-        self._step = None
-        self.reset()
-
-    def reset(self):
+    def __init__(self):
         self._gradients = []
-        self._step = tf.Variable(tf.constant(0, dtype=tf.int64), trainable=False)
+        self._steps = 0
 
-    def add(self, gradients):
+    def add(self, gradients, steps=1):
         if not self._gradients:
             self._gradients.extend([tf.Variable(tf.zeros_like(gradient), trainable=False)
                                     for gradient in gradients])
@@ -94,17 +86,23 @@ class GradientAccumulator:
             raise ValueError(f'Expected {len(self._gradients)} gradients, but got {len(gradients)}')
         for acc, gradient in zip(self._gradients, gradients):
             acc.assign_add(gradient, read_value=False)
-        self._step.assign_add(1)
+        self._steps += steps
 
-    @property
-    def step(self):
-        return self._step.value()
-
-    @property
     def gradients(self):
         if not self._gradients:
             raise ValueError('No gradients have been accumulated yet')
-        grads = list(gradient.value() for gradient in self._gradients)
-        if self._method == 'mean':
-            grads = [gradient / self._step for gradient in grads]
+        grads = list(gradient.value() / tf.cast(self._steps, tf.float32) for gradient in self._gradients)
         return grads
+
+
+class LossAccumulator:
+    def __init__(self):
+        self._loss = 0.0
+        self._steps = 0
+
+    def add(self, losses):
+        self._loss += tf.reduce_sum(losses)
+        self._steps += tf.size(losses)
+
+    def loss(self):
+        return self._loss / tf.cast(self._steps, tf.float32)
