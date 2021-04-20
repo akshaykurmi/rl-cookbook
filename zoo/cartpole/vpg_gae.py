@@ -19,6 +19,8 @@ if __name__ == '__main__':
         lambda_=0.96,
         vf_update_iterations=20,
         replay_buffer_size=250 * 2,
+        policy_update_batch_size=256,
+        vf_update_batch_size=256,
     )
     train_loop = EpisodeTrainLoop(
         agent=agent,

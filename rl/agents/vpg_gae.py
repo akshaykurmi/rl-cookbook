@@ -1,18 +1,21 @@
 import numpy as np
 import tensorflow as tf
 
-from rl.replay_buffer import ReplayField, DeterministicReplayBuffer
+from rl.replay_buffer import ReplayField, OnePassReplayBuffer
+from rl.utils import GradientAccumulator, LossAccumulator
 
 
 class VPGGAE:
-    def __init__(self, env, policy_fn, vf_fn, lr_policy, lr_vf, vf_update_iterations,
-                 gamma, lambda_, replay_buffer_size):
+    def __init__(self, env, policy_fn, vf_fn, lr_policy, lr_vf, gamma, lambda_, vf_update_iterations,
+                 policy_update_batch_size, vf_update_batch_size, replay_buffer_size):
         self.env = env
         self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
         self.vf = vf_fn(env.observation_space.shape)
         self.vf_update_iterations = vf_update_iterations
+        self.policy_update_batch_size = policy_update_batch_size
+        self.vf_update_batch_size = vf_update_batch_size
 
-        self.replay_buffer = DeterministicReplayBuffer(
+        self.replay_buffer = OnePassReplayBuffer(
             buffer_size=replay_buffer_size,
             store_fields=[
                 ReplayField('observation', shape=self.env.observation_space.shape),
@@ -50,34 +53,50 @@ class VPGGAE:
         return transition
 
     def update(self):
-        dataset = self.replay_buffer.as_dataset(num_batches=1, batch_size=None)
-        data = next(iter(dataset))
         result = {
-            'policy_loss': self._update_policy(data['observation'], data['action'], data['advantage']),
-            'vf_loss': self._update_vf(data['observation'], data['reward_to_go']),
+            'policy_loss': self._update_policy(self.replay_buffer.as_dataset(self.policy_update_batch_size)),
+            'vf_loss': self._update_vf(self.replay_buffer.as_dataset(self.vf_update_batch_size)),
         }
         self.replay_buffer.purge()
         return result
 
-    @tf.function(experimental_relax_shapes=True)
-    def _update_policy(self, observation, action, advantage):
-        advantage -= tf.reduce_mean(advantage)
-        advantage /= tf.math.reduce_std(advantage) + 1e-8
-        with tf.GradientTape() as tape:
-            log_probs = self.policy.log_prob(observation, action)
-            loss = -tf.reduce_mean(log_probs * advantage)
-            gradients = tape.gradient(loss, self.policy.trainable_variables)
-            self.policy_optimizer.apply_gradients(zip(gradients, self.policy.trainable_variables))
-        return loss
+    def _update_policy(self, dataset):
+        gradient_acc = GradientAccumulator()
+        loss_acc = LossAccumulator()
+        for data in dataset:
+            gradients, loss = self._update_policy_step(data)
+            gradient_acc.add(gradients, tf.size(loss))
+            loss_acc.add(loss)
+        self.policy_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.policy.trainable_variables))
+        return loss_acc.loss()
 
     @tf.function(experimental_relax_shapes=True)
-    def _update_vf(self, observation, reward_to_go):
-        losses = []
+    def _update_policy_step(self, data):
+        observation, action, advantage = data['observation'], data['action'], data['advantage']
+        advantage -= tf.reduce_mean(advantage)
+        advantage /= tf.math.reduce_std(advantage) + 1e-10
+        with tf.GradientTape() as tape:
+            log_probs = self.policy.log_prob(observation, action)
+            loss = -(log_probs * advantage)
+            gradients = tape.gradient(loss, self.policy.trainable_variables)
+        return gradients, loss
+
+    def _update_vf(self, dataset):
+        loss_acc = LossAccumulator()
         for i in range(self.vf_update_iterations):
-            with tf.GradientTape() as tape:
-                values = self.vf.compute(observation)
-                loss = tf.keras.losses.mean_squared_error(reward_to_go, tf.squeeze(values))
-                gradients = tape.gradient(loss, self.vf.trainable_variables)
-                self.vf_optimizer.apply_gradients(zip(gradients, self.vf.trainable_variables))
-                losses.append(loss)
-        return tf.reduce_mean(losses)
+            gradient_acc = GradientAccumulator()
+            for data in dataset:
+                gradients, loss = self._update_vf_step(data)
+                gradient_acc.add(gradients, tf.size(loss))
+                loss_acc.add(loss)
+            self.vf_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.vf.trainable_variables))
+        return loss_acc.loss()
+
+    @tf.function(experimental_relax_shapes=True)
+    def _update_vf_step(self, data):
+        observation, reward_to_go = data['observation'], data['reward_to_go']
+        with tf.GradientTape() as tape:
+            values = self.vf.compute(observation)
+            loss = tf.math.squared_difference(reward_to_go, tf.squeeze(values))
+            gradients = tape.gradient(loss, self.vf.trainable_variables)
+        return gradients, loss
