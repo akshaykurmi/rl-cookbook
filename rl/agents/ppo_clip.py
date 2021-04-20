@@ -1,127 +1,117 @@
+import numpy as np
 import tensorflow as tf
-from tqdm import tqdm
 
-from rl.replay_buffer import ReplayBuffer
+from rl.replay_buffer import ReplayField, OnePassReplayBuffer
+from rl.utils import MeanAccumulator, GradientAccumulator, tf_standardize
 
 
 class PPOClip:
-    def __init__(self, env, policy_fn, vf_fn, lr_policy, lr_vf, gamma, lambda_, delta, epsilon, epochs,
-                 episodes_per_epoch, max_episode_length, vf_update_iterations, policy_update_iterations,
-                 policy_update_batch_size, ckpt_epochs, log_epochs, ckpt_dir, log_dir):
+    def __init__(self, env, policy_fn, vf_fn, lr_policy, lr_vf, gamma, lambda_, epsilon,
+                 policy_update_iterations, vf_update_iterations, policy_update_batch_size,
+                 vf_update_batch_size, replay_buffer_size):
         self.env = env
         self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
+        self.policy_old = policy_fn(env.observation_space.shape, env.action_space.n)
+        self.policy_old.set_weights(self.policy.get_weights())
         self.vf = vf_fn(env.observation_space.shape)
         self.lr_policy = lr_policy
         self.lr_vf = lr_vf
         self.gamma = gamma
         self.lambda_ = lambda_
-        self.delta = delta
         self.epsilon = epsilon
-        self.epochs = epochs
-        self.episodes_per_epoch = episodes_per_epoch
-        self.max_episode_length = max_episode_length
         self.vf_update_iterations = vf_update_iterations
         self.policy_update_iterations = policy_update_iterations
-        self.policy_batch_size = policy_update_batch_size
-        self.ckpt_epochs = ckpt_epochs
-        self.log_epochs = log_epochs
-        self.ckpt_dir = ckpt_dir
-        self.log_dir = log_dir
+        self.policy_update_batch_size = policy_update_batch_size
+        self.vf_update_batch_size = vf_update_batch_size
 
-        self.replay_buffer = ReplayBuffer(self.gamma, self.lambda_)
-        self.epochs_done = tf.Variable(0, dtype=tf.int64, trainable=False)
+        self.replay_buffer = OnePassReplayBuffer(
+            buffer_size=replay_buffer_size,
+            store_fields=[
+                ReplayField('observation', shape=self.env.observation_space.shape),
+                ReplayField('action', dtype=np.int32),
+                ReplayField('reward'),
+                ReplayField('value'),
+                ReplayField('value_next'),
+                ReplayField('done', dtype=np.bool),
+            ],
+            compute_fields=[
+                ReplayField('advantage'),
+                ReplayField('reward_to_go'),
+            ],
+            gamma=gamma,
+            lambda_=lambda_,
+        )
         self.policy_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_policy)
         self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_vf)
-        self.ckpt = tf.train.Checkpoint(policy=self.policy, vf=self.vf,
-                                        policy_optimizer=self.policy_optimizer, vf_optimizer=self.vf_optimizer,
-                                        epochs_done=self.epochs_done)
-        self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self.ckpt_dir, max_to_keep=1)
-        self.ckpt.restore(self.ckpt_manager.latest_checkpoint).expect_partial()
 
-    def train(self):
-        summary_writer = tf.summary.create_file_writer(self.log_dir)
-        with tqdm(total=self.epochs, desc='Training', unit='epoch') as pbar:
-            pbar.update(self.ckpt.epochs_done.numpy())
-            while self.ckpt.epochs_done.numpy() <= self.epochs:
-                self.replay_buffer.purge()
-                for episode in range(self.episodes_per_epoch):
-                    observation = self.env.reset()
-                    for step in range(self.max_episode_length):
-                        action = self.policy.sample(tf.expand_dims(observation, axis=0)).numpy()[0]
-                        value = self.vf.compute(tf.expand_dims(observation, axis=0)).numpy()[0, 0]
-                        observation_next, reward, done, _ = self.env.step(action)
-                        self.replay_buffer.store_transition(observation, action, reward, value)
-                        observation = observation_next
-                        if done:
-                            value = self.vf.compute(tf.expand_dims(observation, axis=0)).numpy()[0, 0]
-                            self.replay_buffer.terminate_episode(observation, value)
-                            break
+    def variables_to_checkpoint(self):
+        return {'policy': self.policy, 'policy_old': self.policy_old, 'vf': self.vf,
+                'policy_optimizer': self.policy_optimizer, 'vf_optimizer': self.vf_optimizer}
 
-                data = self.replay_buffer.get(['observations', 'actions', 'advantages', 'rewards_to_go',
-                                               'total_rewards', 'episode_lengths'])
+    def step(self, previous_transition=None, training=False):
+        observation = previous_transition['observation_next'] if previous_transition else self.env.reset()
+        value = previous_transition['value_next'] if previous_transition else \
+            self.vf.compute(tf.expand_dims(observation, axis=0)).numpy()[0, 0]
+        action = self.policy.sample(tf.expand_dims(observation, axis=0)).numpy()[0]
+        observation_next, reward, done, _ = self.env.step(action)
+        value_next = self.vf.compute(tf.expand_dims(observation_next, axis=0)).numpy()[0, 0]
+        transition = {'observation': observation, 'observation_next': observation_next,
+                      'action': action, 'reward': reward, 'value': value, 'value_next': value_next, 'done': done}
+        if training:
+            self.replay_buffer.store_transition(transition)
+        return transition
 
-                policy_loss = self._update_policy(
-                    observations=tf.convert_to_tensor(data['observations'], tf.float32),
-                    actions=tf.convert_to_tensor(data['actions'], tf.int32),
-                    advantages=tf.convert_to_tensor(data['advantages'], tf.float32)
-                )
-                vf_loss = self._update_vf(
-                    observations=tf.convert_to_tensor(data['observations'], tf.float32),
-                    rewards_to_go=tf.convert_to_tensor(data['rewards_to_go'], tf.float32)
-                )
+    def update(self):
+        result = {
+            'policy_loss': self._update_policy(self.replay_buffer.as_dataset(self.policy_update_batch_size)),
+            'vf_loss': self._update_vf(self.replay_buffer.as_dataset(self.vf_update_batch_size)),
+        }
+        self.replay_buffer.purge()
+        return result
 
-                e = self.ckpt.epochs_done.numpy()
-                if e % self.ckpt_epochs == 0 or e == self.epochs:
-                    self.ckpt_manager.save()
-                if e % self.log_epochs == 0 or e == self.epochs:
-                    with summary_writer.as_default(), tf.name_scope('training'):
-                        tf.summary.scalar('total_rewards', tf.reduce_mean([tf.reduce_mean(t) for t in tf.split(
-                            data['total_rewards'], data['episode_lengths']
-                        )]), step=self.ckpt.epochs_done)
-                        tf.summary.scalar('episode_lengths', tf.reduce_mean(data['episode_lengths']),
-                                          step=self.ckpt.epochs_done)
-                        tf.summary.scalar('policy_loss', policy_loss, step=self.ckpt.epochs_done)
-                        tf.summary.scalar('vf_loss', vf_loss, step=self.ckpt.epochs_done)
-
-                self.ckpt.epochs_done.assign_add(1)
-                pbar.update(1)
-            self.env.close()
-
-    @tf.function(experimental_relax_shapes=True)
-    def _update_policy(self, observations, actions, advantages):
-        advantages -= tf.reduce_mean(advantages)
-        advantages /= tf.math.reduce_std(advantages) + 1e-8
-        log_probs_old = self.policy.log_prob(observations, actions)
-
-        dataset = tf.data.Dataset.from_tensor_slices({'observations': observations, 'actions': actions,
-                                                      'advantages': advantages, 'log_probs_old': log_probs_old})
-        dataset = dataset.shuffle(500).batch(self.policy_batch_size)
-
-        losses = tf.TensorArray(tf.float32, size=0, dynamic_size=True)
-        i = 0
+    def _update_policy(self, dataset):
+        loss_acc = MeanAccumulator()
         for _ in range(self.policy_update_iterations):
-            for batch in dataset:
-                with tf.GradientTape() as tape:
-                    log_probs = self.policy.log_prob(batch['observations'], batch['actions'])
-                    importance_sampling_weight = tf.exp(log_probs - batch['log_probs_old'])
-                    clipped_importance_sampling_weight = tf.clip_by_value(importance_sampling_weight, 1 - self.epsilon,
-                                                                          1 + self.epsilon)
-                    loss = -tf.reduce_mean(tf.math.minimum(importance_sampling_weight * batch['advantages'],
-                                                           clipped_importance_sampling_weight * batch['advantages']))
-                    gradients = tape.gradient(loss, self.policy.trainable_variables)
-                    self.policy_optimizer.apply_gradients(zip(gradients, self.policy.trainable_variables))
-                    losses.write(i, loss)
-                    i += 1
-        return tf.reduce_mean(losses.stack())
+            for data in dataset:
+                gradients, loss = self._update_policy_step(data)
+                self.policy_optimizer.apply_gradients(zip(gradients, self.policy.trainable_variables))
+                loss_acc.add(loss)
+        self.policy_old.set_weights(self.policy.get_weights())
+        return loss_acc.value()
 
     @tf.function(experimental_relax_shapes=True)
-    def _update_vf(self, observations, rewards_to_go):
-        losses = []
+    def _update_policy_step(self, data):
+        observation, action, advantage = data['observation'], data['action'], data['advantage']
+        advantage = tf_standardize(advantage)
+        log_probs_old = self.policy_old.log_prob(observation, action)
+        with tf.GradientTape() as tape:
+            log_probs = self.policy.log_prob(observation, action)
+            importance_sampling_weight = tf.exp(log_probs - log_probs_old)
+            clipped_importance_sampling_weight = tf.clip_by_value(importance_sampling_weight,
+                                                                  1 - self.epsilon, 1 + self.epsilon)
+            loss = -tf.reduce_mean(tf.math.minimum(
+                importance_sampling_weight * advantage,
+                clipped_importance_sampling_weight * advantage
+            ))
+            gradients = tape.gradient(loss, self.policy.trainable_variables)
+        return gradients, loss
+
+    def _update_vf(self, dataset):
+        loss_acc = MeanAccumulator()
         for i in range(self.vf_update_iterations):
-            with tf.GradientTape() as tape:
-                values = self.vf.compute(observations)
-                loss = tf.keras.losses.mean_squared_error(rewards_to_go, tf.squeeze(values))
-                gradients = tape.gradient(loss, self.vf.trainable_variables)
-                self.vf_optimizer.apply_gradients(zip(gradients, self.vf.trainable_variables))
-                losses.append(loss)
-        return tf.reduce_mean(losses)
+            gradient_acc = GradientAccumulator()
+            for data in dataset:
+                gradients, loss = self._update_vf_step(data)
+                gradient_acc.add(gradients, tf.size(loss))
+                loss_acc.add(loss)
+            self.vf_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.vf.trainable_variables))
+        return loss_acc.value()
+
+    @tf.function(experimental_relax_shapes=True)
+    def _update_vf_step(self, data):
+        observation, reward_to_go = data['observation'], data['reward_to_go']
+        with tf.GradientTape() as tape:
+            values = self.vf.compute(observation)
+            loss = tf.math.squared_difference(reward_to_go, tf.squeeze(values))
+            gradients = tape.gradient(loss, self.vf.trainable_variables)
+        return gradients, loss
