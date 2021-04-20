@@ -3,7 +3,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 
 from rl.replay_buffer import ReplayField, OnePassReplayBuffer
-from rl.utils import LossAccumulator, GradientAccumulator
+from rl.utils import MeanAccumulator, GradientAccumulator, tf_standardize
 
 
 class TRPO:
@@ -68,11 +68,10 @@ class TRPO:
         return result
 
     def _update_policy(self, dataset):
-        loss_acc = LossAccumulator()
-        for data in dataset:
+        loss_acc = MeanAccumulator()
+        for data in dataset:  # TODO: is batching here correct?
             observation, action, advantage = data['observation'], data['action'], data['advantage']
-            advantage -= tf.reduce_mean(advantage)
-            advantage /= tf.math.reduce_std(advantage) + 1e-8
+            advantage = tf_standardize(advantage)
             log_probs_old = self.policy.log_prob(observation, action)
             distribution_old = self.policy.distribution(observation)
 
@@ -86,7 +85,7 @@ class TRPO:
             loss = self._line_search(observation, action, advantage, Ax, step_direction,
                                      distribution_old, log_probs_old, loss_old)
             loss_acc.add(loss)
-        return loss_acc.loss()
+        return loss_acc.value()
 
     def _surrogate_loss(self, observation, action, advantage, log_probs_old):
         log_probs = self.policy.log_prob(observation, action)
@@ -146,7 +145,7 @@ class TRPO:
         return loss_old
 
     def _update_vf(self, dataset):
-        loss_acc = LossAccumulator()
+        loss_acc = MeanAccumulator()
         for i in range(self.vf_update_iterations):
             gradient_acc = GradientAccumulator()
             for data in dataset:
@@ -154,7 +153,7 @@ class TRPO:
                 gradient_acc.add(gradients, tf.size(loss))
                 loss_acc.add(loss)
             self.vf_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.vf.trainable_variables))
-        return loss_acc.loss()
+        return loss_acc.value()
 
     @tf.function(experimental_relax_shapes=True)
     def _update_vf_step(self, data):

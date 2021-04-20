@@ -95,7 +95,7 @@ class GradientAccumulator:
         return grads
 
 
-class LossAccumulator:
+class MeanAccumulator:
     def __init__(self):
         self._loss = 0.0
         self._steps = 0
@@ -104,5 +104,12 @@ class LossAccumulator:
         self._loss += tf.reduce_sum(losses)
         self._steps += tf.size(losses)
 
-    def loss(self):
+    def value(self):
         return self._loss / tf.cast(self._steps, tf.float32)
+
+
+@tf.function
+def tf_standardize(x):
+    x -= tf.reduce_mean(x)
+    x /= tf.math.reduce_std(x) + 1e-10
+    return x

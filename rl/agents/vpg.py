@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 
 from rl.replay_buffer import OnePassReplayBuffer, ReplayField
-from rl.utils import GradientAccumulator, LossAccumulator
+from rl.utils import GradientAccumulator, MeanAccumulator, tf_standardize
 
 
 class VPG:
@@ -48,19 +48,18 @@ class VPG:
 
     def _update_policy(self, dataset):
         gradient_acc = GradientAccumulator()
-        loss_acc = LossAccumulator()
+        loss_acc = MeanAccumulator()
         for data in dataset:
             gradients, loss = self._update_policy_step(data)
             gradient_acc.add(gradients, tf.size(loss))
             loss_acc.add(loss)
         self.optimizer.apply_gradients(zip(gradient_acc.gradients(), self.policy.trainable_variables))
-        return loss_acc.loss()
+        return loss_acc.value()
 
     @tf.function(experimental_relax_shapes=True)
     def _update_policy_step(self, data):
         observation, action, episode_return = data['observation'], data['action'], data['episode_return']
-        episode_return -= tf.reduce_mean(episode_return)
-        episode_return /= tf.math.reduce_std(episode_return) + 1e-10
+        episode_return = tf_standardize(episode_return)
         with tf.GradientTape() as tape:
             log_probs = self.policy.log_prob(observation, action)
             loss = -(log_probs * episode_return)

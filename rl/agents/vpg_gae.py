@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 
 from rl.replay_buffer import ReplayField, OnePassReplayBuffer
-from rl.utils import GradientAccumulator, LossAccumulator
+from rl.utils import GradientAccumulator, MeanAccumulator, tf_standardize
 
 
 class VPGGAE:
@@ -62,19 +62,18 @@ class VPGGAE:
 
     def _update_policy(self, dataset):
         gradient_acc = GradientAccumulator()
-        loss_acc = LossAccumulator()
+        loss_acc = MeanAccumulator()
         for data in dataset:
             gradients, loss = self._update_policy_step(data)
             gradient_acc.add(gradients, tf.size(loss))
             loss_acc.add(loss)
         self.policy_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.policy.trainable_variables))
-        return loss_acc.loss()
+        return loss_acc.value()
 
     @tf.function(experimental_relax_shapes=True)
     def _update_policy_step(self, data):
         observation, action, advantage = data['observation'], data['action'], data['advantage']
-        advantage -= tf.reduce_mean(advantage)
-        advantage /= tf.math.reduce_std(advantage) + 1e-10
+        advantage = tf_standardize(advantage)
         with tf.GradientTape() as tape:
             log_probs = self.policy.log_prob(observation, action)
             loss = -(log_probs * advantage)
@@ -82,7 +81,7 @@ class VPGGAE:
         return gradients, loss
 
     def _update_vf(self, dataset):
-        loss_acc = LossAccumulator()
+        loss_acc = MeanAccumulator()
         for i in range(self.vf_update_iterations):
             gradient_acc = GradientAccumulator()
             for data in dataset:
@@ -90,7 +89,7 @@ class VPGGAE:
                 gradient_acc.add(gradients, tf.size(loss))
                 loss_acc.add(loss)
             self.vf_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.vf.trainable_variables))
-        return loss_acc.loss()
+        return loss_acc.value()
 
     @tf.function(experimental_relax_shapes=True)
     def _update_vf_step(self, data):
