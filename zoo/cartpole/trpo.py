@@ -18,6 +18,8 @@ if __name__ == '__main__':
         lambda_=0.96,
         delta=0.001,
         replay_buffer_size=250 * 8,
+        policy_update_batch_size=512,
+        vf_update_batch_size=512,
         vf_update_iterations=20,
         conjugate_gradient_iterations=20,
         conjugate_gradient_tol=1e-5,

@@ -2,13 +2,14 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from rl.replay_buffer import ReplayField, DeterministicReplayBuffer
+from rl.replay_buffer import ReplayField, OnePassReplayBuffer
+from rl.utils import LossAccumulator, GradientAccumulator
 
 
 class TRPO:
     def __init__(self, env, policy_fn, vf_fn, lr_vf, gamma, lambda_, delta, replay_buffer_size,
-                 vf_update_iterations, conjugate_gradient_iterations, conjugate_gradient_tol,
-                 line_search_iterations, line_search_coefficient):
+                 policy_update_batch_size, vf_update_batch_size, vf_update_iterations, conjugate_gradient_iterations,
+                 conjugate_gradient_tol, line_search_iterations, line_search_coefficient):
         self.env = env
         self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
         self.vf = vf_fn(env.observation_space.shape)
@@ -16,12 +17,14 @@ class TRPO:
         self.lambda_ = lambda_
         self.delta = delta
         self.vf_update_iterations = vf_update_iterations
+        self.policy_update_batch_size = policy_update_batch_size
+        self.vf_update_batch_size = vf_update_batch_size
         self.conjugate_gradient_iterations = conjugate_gradient_iterations
         self.conjugate_gradient_tol = conjugate_gradient_tol
         self.line_search_iterations = line_search_iterations
         self.line_search_coefficient = line_search_coefficient
 
-        self.replay_buffer = DeterministicReplayBuffer(
+        self.replay_buffer = OnePassReplayBuffer(
             buffer_size=replay_buffer_size,
             store_fields=[
                 ReplayField('observation', shape=self.env.observation_space.shape),
@@ -57,43 +60,33 @@ class TRPO:
         return transition
 
     def update(self):
-        dataset = self.replay_buffer.as_dataset(num_batches=1, batch_size=None)
-        data = next(iter(dataset))
         result = {
-            'policy_loss': self._update_policy(data['observation'], data['action'], data['advantage']),
-            'vf_loss': self._update_vf(data['observation'], data['reward_to_go']),
+            'policy_loss': self._update_policy(self.replay_buffer.as_dataset(self.policy_update_batch_size)),
+            'vf_loss': self._update_vf(self.replay_buffer.as_dataset(self.vf_update_batch_size)),
         }
         self.replay_buffer.purge()
         return result
 
-    def _update_policy(self, observation, action, advantage):
-        advantage -= tf.reduce_mean(advantage)
-        advantage /= tf.math.reduce_std(advantage) + 1e-8
-        log_probs_old = self.policy.log_prob(observation, action)
-        distribution_old = self.policy.distribution(observation)
+    def _update_policy(self, dataset):
+        loss_acc = LossAccumulator()
+        for data in dataset:
+            observation, action, advantage = data['observation'], data['action'], data['advantage']
+            advantage -= tf.reduce_mean(advantage)
+            advantage /= tf.math.reduce_std(advantage) + 1e-8
+            log_probs_old = self.policy.log_prob(observation, action)
+            distribution_old = self.policy.distribution(observation)
 
-        with tf.GradientTape() as tape:
-            loss_old = self._surrogate_loss(observation, action, advantage, log_probs_old)
-            gradients = tape.gradient(loss_old, self.policy.trainable_variables)
-            gradients = tf.concat([tf.reshape(g, [-1]) for g in gradients], axis=0)
-
-        Ax = lambda v: self._fisher_vector_product(v, observation, distribution_old)
-        step_direction = self._conjugate_gradient(Ax, gradients)
-        loss = self._line_search(observation, action, advantage, Ax, step_direction,
-                                 distribution_old, log_probs_old, loss_old)
-        return loss
-
-    @tf.function(experimental_relax_shapes=True)
-    def _update_vf(self, observation, reward_to_go):
-        losses = []
-        for i in range(self.vf_update_iterations):
             with tf.GradientTape() as tape:
-                values = self.vf.compute(observation)
-                loss = tf.keras.losses.mean_squared_error(reward_to_go, tf.squeeze(values))
-                gradients = tape.gradient(loss, self.vf.trainable_variables)
-                self.vf_optimizer.apply_gradients(zip(gradients, self.vf.trainable_variables))
-                losses.append(loss)
-        return tf.reduce_mean(losses)
+                loss_old = self._surrogate_loss(observation, action, advantage, log_probs_old)
+                gradients = tape.gradient(loss_old, self.policy.trainable_variables)
+                gradients = tf.concat([tf.reshape(g, [-1]) for g in gradients], axis=0)
+
+            Ax = lambda v: self._fisher_vector_product(v, observation, distribution_old)
+            step_direction = self._conjugate_gradient(Ax, gradients)
+            loss = self._line_search(observation, action, advantage, Ax, step_direction,
+                                     distribution_old, log_probs_old, loss_old)
+            loss_acc.add(loss)
+        return loss_acc.loss()
 
     def _surrogate_loss(self, observation, action, advantage, log_probs_old):
         log_probs = self.policy.log_prob(observation, action)
@@ -151,3 +144,23 @@ class TRPO:
             if i == self.line_search_iterations - 1:
                 self.policy.set_weights(theta_old)
         return loss_old
+
+    def _update_vf(self, dataset):
+        loss_acc = LossAccumulator()
+        for i in range(self.vf_update_iterations):
+            gradient_acc = GradientAccumulator()
+            for data in dataset:
+                gradients, loss = self._update_vf_step(data)
+                gradient_acc.add(gradients, tf.size(loss))
+                loss_acc.add(loss)
+            self.vf_optimizer.apply_gradients(zip(gradient_acc.gradients(), self.vf.trainable_variables))
+        return loss_acc.loss()
+
+    @tf.function(experimental_relax_shapes=True)
+    def _update_vf_step(self, data):
+        observation, reward_to_go = data['observation'], data['reward_to_go']
+        with tf.GradientTape() as tape:
+            values = self.vf.compute(observation)
+            loss = tf.math.squared_difference(reward_to_go, tf.squeeze(values))
+            gradients = tape.gradient(loss, self.vf.trainable_variables)
+        return gradients, loss
