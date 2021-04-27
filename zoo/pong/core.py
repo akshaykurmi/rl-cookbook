@@ -12,8 +12,8 @@ import tensorflow_probability as tfp
 class PongEnvWrapper(gym.Wrapper):
     def __init__(self):
         super().__init__(gym.make("Pong-v0"))
-        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(160, 160, 4), dtype=np.uint8)
-        self.state = np.zeros((160, 160, 4), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(80, 80, 4), dtype=np.int8)
+        self.state = np.zeros(self.observation_space.shape, dtype=np.int8)
 
     def step(self, action):
         observation, reward, done, info = super().step(action)
@@ -22,17 +22,17 @@ class PongEnvWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         observation = super().reset(**kwargs)
-        self.state = np.zeros((160, 160, 4), dtype=np.float32)
+        self.state = np.zeros(self.observation_space.shape, dtype=np.int8)
         self.state = np.dstack((self.state, self._preprocess(observation)))[:, :, 1:]
         return self.state
 
     @staticmethod
     def _preprocess(observation):
         observation = observation[34:194]
-        observation = observation[:, :, 0]
+        observation = observation[::2, ::2, 0]
         observation[observation == 144] = 0
         observation[observation != 0] = 1
-        return observation.astype(np.float32)
+        return observation.astype(np.int8)
 
 
 class PolicyNetwork(tf.keras.Model):
@@ -50,7 +50,7 @@ class PolicyNetwork(tf.keras.Model):
         super().get_config()
 
     def call(self, observations, **kwargs):
-        x = self.conv1(observations)
+        x = self.conv1(tf.cast(observations, tf.float32))
         x = self.pool1(x)
         x = self.conv2(x)
         x = self.pool2(x)
@@ -85,7 +85,7 @@ class ValueFunctionNetwork(tf.keras.Model):
         super().get_config()
 
     def call(self, observations, **kwargs):
-        x = self.conv1(observations)
+        x = self.conv1(tf.cast(observations, tf.float32))
         x = self.pool1(x)
         x = self.conv2(x)
         x = self.pool2(x)
