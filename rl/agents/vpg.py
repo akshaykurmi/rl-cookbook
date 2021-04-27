@@ -14,8 +14,10 @@ class VPG:
         self.replay_buffer = OnePassReplayBuffer(
             buffer_size=replay_buffer_size,
             store_fields=[
-                ReplayField('observation', shape=self.env.observation_space.shape),
-                ReplayField('action', dtype=np.int32),
+                ReplayField('observation', shape=self.env.observation_space.shape,
+                            dtype=self.env.observation_space.dtype),
+                ReplayField('action', shape=self.env.action_space.shape,
+                            dtype=self.env.action_space.dtype),
                 ReplayField('reward'),
                 ReplayField('done', dtype=np.bool),
             ],
