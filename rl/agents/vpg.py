@@ -8,7 +8,7 @@ from rl.utils import GradientAccumulator, MeanAccumulator, tf_standardize
 class VPG:
     def __init__(self, env, policy_fn, lr, replay_buffer_size, policy_update_batch_size):
         self.env = env
-        self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
+        self.policy = policy_fn()
         self.policy_update_batch_size = policy_update_batch_size
 
         self.replay_buffer = OnePassReplayBuffer(

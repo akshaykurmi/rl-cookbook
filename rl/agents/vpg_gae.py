@@ -9,8 +9,8 @@ class VPGGAE:
     def __init__(self, env, policy_fn, vf_fn, lr_policy, lr_vf, gamma, lambda_, vf_update_iterations,
                  policy_update_batch_size, vf_update_batch_size, replay_buffer_size):
         self.env = env
-        self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
-        self.vf = vf_fn(env.observation_space.shape)
+        self.policy = policy_fn()
+        self.vf = vf_fn()
         self.vf_update_iterations = vf_update_iterations
         self.policy_update_batch_size = policy_update_batch_size
         self.vf_update_batch_size = vf_update_batch_size

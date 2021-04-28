@@ -10,10 +10,10 @@ class PPOClip:
                  policy_update_iterations, vf_update_iterations, policy_update_batch_size,
                  vf_update_batch_size, replay_buffer_size):
         self.env = env
-        self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
-        self.policy_old = policy_fn(env.observation_space.shape, env.action_space.n)
+        self.policy = policy_fn()
+        self.policy_old = policy_fn()
         self.policy_old.set_weights(self.policy.get_weights())
-        self.vf = vf_fn(env.observation_space.shape)
+        self.vf = vf_fn()
         self.lr_policy = lr_policy
         self.lr_vf = lr_vf
         self.gamma = gamma

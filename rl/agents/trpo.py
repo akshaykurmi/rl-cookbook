@@ -11,8 +11,8 @@ class TRPO:
                  policy_update_batch_size, vf_update_batch_size, vf_update_iterations, conjugate_gradient_iterations,
                  conjugate_gradient_tol, line_search_iterations, line_search_coefficient):
         self.env = env
-        self.policy = policy_fn(env.observation_space.shape, env.action_space.n)
-        self.vf = vf_fn(env.observation_space.shape)
+        self.policy = policy_fn()
+        self.vf = vf_fn()
         self.gamma = gamma
         self.lambda_ = lambda_
         self.delta = delta
