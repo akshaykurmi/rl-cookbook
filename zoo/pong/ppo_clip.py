@@ -1,17 +1,22 @@
+import os
+
 from rl.agents.ppo_clip import PPOClip
 from rl.loops import EpisodeTrainLoop
 from rl.metrics import AverageReturn, AverageEpisodeLength
-from zoo.pong.core import PolicyNetwork, ValueFunctionNetwork, get_output_dirs, parse_args, evaluate_policy, \
-    PongEnvWrapper
+from zoo.pong.core import PolicyNetwork, ValueFunctionNetwork, PongEnvWrapper
+from zoo.utils import parse_args, get_output_dirs, evaluate_policy
 
 if __name__ == '__main__':
     args = parse_args()
-    ckpt_dir, log_dir = get_output_dirs('ppo_clip', args.mode == 'train')
+    ckpt_dir, log_dir = get_output_dirs(os.path.dirname(__file__), 'ppo_clip', args)
 
+    env = PongEnvWrapper()
+    policy_fn = lambda: PolicyNetwork(env.observation_space.shape, env.action_space.n)
+    vf_fn = lambda: ValueFunctionNetwork(env.observation_space.shape)
     agent = PPOClip(
-        env=PongEnvWrapper(),
-        policy_fn=PolicyNetwork,
-        vf_fn=ValueFunctionNetwork,
+        env=env,
+        policy_fn=policy_fn,
+        vf_fn=vf_fn,
         lr_policy=1e-3,
         lr_vf=1e-3,
         gamma=0.98,

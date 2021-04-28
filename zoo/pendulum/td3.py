@@ -1,12 +1,16 @@
+import os
+
 import gym
 
 from rl.agents.td3 import TD3
-from zoo.pendulum.core import parse_args, get_output_dirs, evaluate_policy, PolicyNetwork, \
-    QFunctionNetwork
+from rl.loops import StepTrainLoop
+from rl.metrics import AverageReturn
+from zoo.pendulum.core import PolicyNetwork, QFunctionNetwork
+from zoo.utils import parse_args, get_output_dirs, evaluate_policy
 
 if __name__ == '__main__':
     args = parse_args()
-    ckpt_dir, log_dir = get_output_dirs('td3', args.mode == 'train')
+    ckpt_dir, log_dir = get_output_dirs(os.path.dirname(__file__), 'td3', args)
 
     env = gym.make('Pendulum-v0')
     policy_fn = lambda: PolicyNetwork(env.observation_space.shape, env.action_space.shape[0], env.action_space.high,
@@ -20,24 +24,29 @@ if __name__ == '__main__':
         lr_qf=1e-3,
         gamma=0.99,
         polyak=0.995,
-        episodes=10000,
-        max_episode_length=250,
         replay_buffer_size=5000,
-        initial_random_episodes=50,
-        update_every_steps=50,
         update_iterations=50,
         update_batch_size=32,
         update_policy_delay=2,
         transition_action_noise=0.1,
         target_action_noise=0.2,
         target_action_noise_clip=0.5,
-        ckpt_episodes=100,
-        log_episodes=1,
+    )
+
+    train_loop = StepTrainLoop(
+        agent=agent,
+        n_steps=500 * 200,
+        max_episode_length=200,
+        initial_random_steps=20 * 200,
         ckpt_dir=ckpt_dir,
-        log_dir=log_dir
+        log_dir=log_dir,
+        ckpt_every=20 * 200,
+        log_every=5 * 200,
+        update_every=50,
+        metrics=[AverageReturn(5)],
     )
 
     if args.mode == 'train':
-        agent.train()
+        train_loop.run()
     if args.mode == 'evaluate':
         evaluate_policy(agent.env, agent.policy)

@@ -1,18 +1,24 @@
+import os
+
 import gym
 
 from rl.agents.trpo import TRPO
 from rl.loops import EpisodeTrainLoop
 from rl.metrics import AverageReturn, AverageEpisodeLength
-from zoo.cartpole.core import PolicyNetwork, ValueFunctionNetwork, get_output_dirs, parse_args, evaluate_policy
+from zoo.cartpole.core import PolicyNetwork, ValueFunctionNetwork
+from zoo.utils import parse_args, get_output_dirs, evaluate_policy
 
 if __name__ == '__main__':
     args = parse_args()
-    ckpt_dir, log_dir = get_output_dirs('trpo', args.mode == 'train')
+    ckpt_dir, log_dir = get_output_dirs(os.path.dirname(__file__), 'trpo', args)
 
+    env = gym.make('CartPole-v0')
+    policy_fn = lambda: PolicyNetwork(env.observation_space.shape, env.action_space.n)
+    vf_fn = lambda: ValueFunctionNetwork(env.observation_space.shape)
     agent = TRPO(
-        env=gym.make('CartPole-v0'),
-        policy_fn=PolicyNetwork,
-        vf_fn=ValueFunctionNetwork,
+        env=env,
+        policy_fn=policy_fn,
+        vf_fn=vf_fn,
         lr_vf=1e-3,
         gamma=0.98,
         lambda_=0.96,

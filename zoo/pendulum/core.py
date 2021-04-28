@@ -1,8 +1,3 @@
-import argparse
-import os
-import shutil
-from time import sleep
-
 import tensorflow as tf
 import tensorflow_probability as tfp
 
@@ -109,30 +104,3 @@ class PolicyNetworkSAC(tf.keras.Model):
                                           ), axis=1)  # rescale due to tanh squashing
             return actions, entropy
         return actions
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['train', 'evaluate'], required=True, help='Train or evaluate the agent?')
-    return parser.parse_args()
-
-
-def get_output_dirs(name, overwrite):
-    ckpt_dir = os.path.join(os.path.dirname(__file__), 'ckpt', name)
-    log_dir = os.path.join(os.path.dirname(__file__), 'log', name)
-    if overwrite:
-        shutil.rmtree(ckpt_dir, ignore_errors=True)
-        shutil.rmtree(log_dir, ignore_errors=True)
-    return ckpt_dir, log_dir
-
-
-def evaluate_policy(env, policy):
-    observation = env.reset()
-    env.render()
-    done = False
-    while not done:
-        sleep(0.005)
-        action = policy.sample(observation.reshape(1, -1), deterministic=True, return_entropy=False).numpy()[0]
-        observation, reward, done, info = env.step(action)
-        env.render()
-    env.close()
