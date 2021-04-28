@@ -10,7 +10,7 @@ python = "3.8.*"
 tensorflow = "^2.4.1"
 tqdm = "^4.59.0"
 tensorflow-probability = "^0.12.1"
-gym = {extras = ["atari"], version = "^0.18.0"}
+gym = {extras = ["atari", "box2d"], version = "^0.18.0"}
 
 [tool.poetry.dev-dependencies]
 jupyterlab = "^3.0.12"
