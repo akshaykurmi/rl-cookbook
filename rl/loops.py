@@ -34,31 +34,31 @@ class EpisodeTrainLoop:
                         m.record(transition)
                     if transition['done']:
                         break
-                e = self.ckpt.episodes_done.numpy()
-                if e % self.update_every == 0 or e == self.n_episodes:
+                i = self.ckpt.episodes_done.numpy()
+                if i % self.update_every == 0 or i == self.n_episodes:
                     losses = self.agent.update()
-                if e % self.ckpt_every == 0 or e == self.n_episodes:
+                if i % self.ckpt_every == 0 or i == self.n_episodes:
                     self.ckpt_manager.save()
-                if e % self.log_every == 0 or e == self.n_episodes:
+                if i % self.log_every == 0 or i == self.n_episodes:
                     if losses:
                         with summary_writer.as_default(), tf.name_scope('losses'):
                             for k, v in losses.items():
-                                tf.summary.scalar(k, v, step=e)
+                                tf.summary.scalar(k, v, step=i)
                     with summary_writer.as_default(), tf.name_scope('metrics'):
                         for m in self.metrics:
-                            tf.summary.scalar(m.name, m.compute(), step=e)
-
+                            tf.summary.scalar(m.name, m.compute(), step=i)
                 self.ckpt.episodes_done.assign_add(1)
                 pbar.update(1)
             self.agent.env.close()
 
 
 class StepTrainLoop:
-    def __init__(self, agent, n_steps, max_episode_length, ckpt_dir, log_dir,
+    def __init__(self, agent, n_steps, max_episode_length, initial_random_steps, ckpt_dir, log_dir,
                  ckpt_every, log_every, update_every, metrics):
         self.agent = agent
         self.n_steps = n_steps
         self.max_episode_length = max_episode_length
+        self.initial_random_steps = initial_random_steps
         self.ckpt_dir = ckpt_dir
         self.log_dir = log_dir
         self.ckpt_every = ckpt_every
@@ -80,23 +80,24 @@ class StepTrainLoop:
             while self.ckpt.steps_done.numpy() < self.n_steps:
                 transition, losses = None, None
                 for step in range(self.max_episode_length):
-                    transition = self.agent.step(transition, training=True)
+                    i = self.ckpt.steps_done.numpy()
+                    transition = self.agent.step(transition, training=True,
+                                                 random_action=i < self.initial_random_steps)
                     for m in self.metrics:
                         m.record(transition)
-                    e = self.ckpt.steps_done.numpy()
-                    if e % self.update_every == 0 or e == self.n_steps:
+                    if i % self.update_every == 0 or i == self.n_steps:
                         losses = self.agent.update()
-                    if e % self.ckpt_every == 0 or e == self.n_steps:
+                    if i % self.ckpt_every == 0 or i == self.n_steps:
                         self.ckpt_manager.save()
-                    if e % self.log_every == 0 or e == self.n_steps:
+                    if i % self.log_every == 0 or i == self.n_steps:
                         if losses:
                             with summary_writer.as_default(), tf.name_scope('losses'):
                                 for k, v in losses.items():
-                                    tf.summary.scalar(k, v, step=e)
+                                    tf.summary.scalar(k, v, step=i)
                         with summary_writer.as_default(), tf.name_scope('metrics'):
                             for m in self.metrics:
-                                tf.summary.scalar(m.name, m.compute(), step=e)
-                    if transition['done'] or e == self.n_steps:
+                                tf.summary.scalar(m.name, m.compute(), step=i)
+                    if transition['done'] or i == self.n_steps:
                         break
                     self.ckpt.steps_done.assign_add(1)
                     pbar.update(1)
