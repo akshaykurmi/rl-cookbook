@@ -79,7 +79,7 @@ class TD3:
     @tf.function(experimental_relax_shapes=True)
     def _update_qf(self, data):
         observation, observation_next = data['observation'], data['observation_next']
-        action, reward, done = data['action'], data['reward'], data['done']
+        action, reward, done = data['action'], data['reward'], tf.cast(data['done'], tf.float32)
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             tape.watch(self.qf1.trainable_variables)
             tape.watch(self.qf2.trainable_variables)
