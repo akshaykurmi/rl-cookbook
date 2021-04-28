@@ -53,7 +53,7 @@ class DDPG:
             self.replay_buffer.store_transition(transition)
         return transition
 
-    def _update(self):
+    def update(self):
         dataset = self.replay_buffer.as_dataset(self.update_batch_size).take(self.update_iterations)
         policy_loss_acc, qf_loss_acc = MeanAccumulator(), MeanAccumulator()
         for data in dataset:
