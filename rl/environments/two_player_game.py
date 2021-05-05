@@ -8,15 +8,11 @@ class TwoPlayerGame(ABC):
     observation_space = None
 
     @abstractmethod
+    def reset(self, canonical=True):
+        raise NotImplementedError
+
+    @abstractmethod
     def step(self, action, canonical=True):
-        raise NotImplementedError
-
-    @abstractmethod
-    def reset(self):
-        raise NotImplementedError
-
-    @abstractmethod
-    def render(self, mode='human'):
         raise NotImplementedError
 
     @abstractmethod
@@ -33,6 +29,10 @@ class TwoPlayerGame(ABC):
 
     @abstractmethod
     def is_over(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def render(self, mode='human'):
         raise NotImplementedError
 
     def close(self):

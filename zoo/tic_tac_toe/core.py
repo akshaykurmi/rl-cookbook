@@ -2,6 +2,7 @@ from enum import Enum
 
 import gym
 import numpy as np
+import tensorflow as tf
 
 from rl.environments.two_player_game import TwoPlayerGame
 
@@ -96,3 +97,24 @@ class TicTacToe(TwoPlayerGame):
         if np.count_nonzero(state) == 9:
             return TicTacToe.GameStatus.DRAW
         return TicTacToe.GameStatus.IN_PROGRESS
+
+
+class PolicyAndValueFunctionNetwork(tf.keras.Model):
+    def __init__(self, observation_shape, n_actions, l2):
+        super().__init__()
+        self.flatten = tf.keras.layers.Flatten(input_shape=observation_shape)
+        self.dense1 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense2 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.pi = tf.keras.layers.Dense(n_actions, 'softmax', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.v = tf.keras.layers.Dense(1, 'linear', kernel_regularizer=tf.keras.regularizers.L2(l2))
+
+    def get_config(self):
+        super().get_config()
+
+    def call(self, observations, **kwargs):
+        x = self.flatten(observations)
+        x = self.dense1(x)
+        x = self.dense2(x)
+        pi = self.pi(x)
+        v = self.v(x)
+        return pi, v

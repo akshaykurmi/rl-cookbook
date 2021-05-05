@@ -14,8 +14,8 @@ class AlphaZero:
     def __init__(self, game, policy_and_vf_fn, lr, replay_buffer_size, ckpt_dir, log_dir):
         self.game = game
         self.policy_and_vf = policy_and_vf_fn()
-        # self.policy_and_vf_old = policy_and_vf_fn()
-        # self.policy_and_vf_old.set_weights(self.policy_and_vf.get_weights())
+        self.policy_and_vf_old = policy_and_vf_fn()
+        self.policy_and_vf_old.set_weights(self.policy_and_vf.get_weights())
         self.ckpt_dir = ckpt_dir
         self.log_dir = log_dir
 
@@ -24,7 +24,7 @@ class AlphaZero:
             store_fields=[
                 ReplayField('observation', shape=self.game.observation_space.shape,
                             dtype=self.game.observation_space.dtype),
-                ReplayField('p', shape=self.game.action_space.shape),
+                ReplayField('p', shape=(self.game.action_space.n,)),
                 ReplayField('reward'),
                 ReplayField('done', dtype=np.bool),
             ],
@@ -33,6 +33,8 @@ class AlphaZero:
             ],
         )
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+        self.cce_loss = tf.keras.losses.CategoricalCrossentropy()
+        self.mse_loss = tf.keras.losses.MeanSquaredError()
 
         self.iterations_done = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.ckpt = tf.train.Checkpoint(iterations_done=self.iterations_done, optimizer=self.optimizer,
@@ -51,18 +53,18 @@ class AlphaZero:
             for i in range(self.ckpt.iterations_done.numpy(), n_iterations):
 
                 for _ in range(n_self_play_games):
-                    observation = self.game.reset()
+                    observation = self.game.reset(canonical=True)
                     mcts = MCTS(game=deepcopy(self.game), policy_and_vf=self.policy_and_vf, n_steps=mcts_n_steps,
                                 tau=mcts_tau, eta=mcts_eta, epsilon=mcts_epsilon, c_puct=mcts_c_puct)
                     for step in itertools.count():
                         p = mcts.search(step)
                         action = int(tfp.distributions.Categorical(probs=p).sample())
-                        observation_next, score, done, _, = self.game.step(action, canonical=True)
+                        observation_next, score, is_game_over, _ = self.game.step(action, canonical=True)
                         mcts.step(action)
-                        transition = {'observation': observation, 'p': p, 'reward': score, 'done': done}
+                        transition = {'observation': observation, 'p': p, 'reward': score, 'done': is_game_over}
                         self.replay_buffer.store_transition(transition)
                         observation = observation_next
-                        if done:
+                        if is_game_over:
                             break
 
                 losses = self.update(update_batch_size, update_iterations)
@@ -73,9 +75,23 @@ class AlphaZero:
                     with summary_writer.as_default(), tf.name_scope('losses'):
                         for k, v in losses.items():
                             tf.summary.scalar(k, v, step=i)
+                    with summary_writer.as_default(), tf.name_scope('metrics'):
+                        tf.summary.scalar('replay_buffer_size', self.replay_buffer.current_size, step=i)
                 if i % eval_every == 0 or i == n_iterations - 1:
-                    # evaluate
-                    pass
+                    print('=============== Evaluating ===============')
+                    self.game.reset()
+                    print(self.game.render())
+                    done = False
+                    while not done:
+                        valid_actions = self.game.valid_actions(canonical=True)
+                        pi, v = self.policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
+                        pi = pi.numpy()[0]
+                        p = np.zeros_like(pi)
+                        p[valid_actions] = pi[valid_actions]
+                        action = np.argmax(p)
+                        _, _, done, _ = self.game.step(action)
+                        print(self.game.render())
+                    print('============= Done Evaluating =============')
 
                 self.ckpt.iterations_done.assign_add(1)
                 pbar.update(1)
@@ -84,30 +100,33 @@ class AlphaZero:
 
     def update(self, update_batch_size, update_iterations):
         dataset = self.replay_buffer.as_dataset(update_batch_size).take(update_iterations)
-        policy_loss_acc, vf_loss_acc, total_loss_acc = MeanAccumulator(), MeanAccumulator(), MeanAccumulator()
+        policy_loss_acc, vf_loss_acc = MeanAccumulator(), MeanAccumulator()
+        reg_loss_acc, total_loss_acc = MeanAccumulator(), MeanAccumulator()
         for data in dataset:
-            policy_loss, vf_loss, total_loss = self._update(data)
+            policy_loss, vf_loss, reg_loss, total_loss = self._update(data)
             policy_loss_acc.add(policy_loss)
             vf_loss_acc.add(vf_loss)
+            reg_loss_acc.add(reg_loss)
             total_loss_acc.add(total_loss)
         return {
             'policy_loss': policy_loss_acc.value(),
             'vf_loss': vf_loss_acc.value(),
+            'reg_loss': reg_loss_acc.value(),
             'total_loss': total_loss_acc.value(),
         }
 
     @tf.function
     def _update(self, data):
         observation, p, z = data['observation'], data['p'], data['episode_return']
-        with tf.GradientTape as tape:
+        with tf.GradientTape() as tape:
             pi, v = self.policy_and_vf(observation, training=True)
-            policy_loss = tf.keras.losses.categorical_crossentropy(p, pi)
-            vf_loss = tf.keras.losses.mean_squared_error(z, v)
-            regularization_loss = self.policy_and_vf.losses  # change this
-            total_loss = policy_loss + vf_loss + regularization_loss
+            policy_loss = self.cce_loss(p, pi)
+            vf_loss = self.mse_loss(z, v)
+            reg_loss = tf.reduce_sum(self.policy_and_vf.losses)
+            total_loss = policy_loss + vf_loss + reg_loss
             gradients = tape.gradient(total_loss, self.policy_and_vf.trainable_variables)
             self.optimizer.apply_gradients(zip(gradients, self.policy_and_vf.trainable_variables))
-        return policy_loss, vf_loss, total_loss
+        return policy_loss, vf_loss, reg_loss, total_loss
 
 
 class MCTS:
@@ -129,7 +148,7 @@ class MCTS:
             leaf.backup(v)
             if is_game_over:
                 break
-        p = np.zeros(self.root.game.action_space.shape, dtype=np.float32)
+        p = np.zeros(self.root.game.action_space.n, dtype=np.float32)
         if step <= self.tau:
             p[self.root.valid_actions] = self.root.N
         else:
@@ -139,7 +158,8 @@ class MCTS:
         return p / np.sum(p)
 
     def step(self, action):
-        self.root = self.root.children[action]
+        a = np.argwhere(self.root.valid_actions == action)[0][0]
+        self.root = self.root.children[a]
 
 
 class MCTSNode:
@@ -166,12 +186,13 @@ class MCTSNode:
         if self.is_leaf():
             return self
         U = c_puct * self.P_noise(self.P) * np.sqrt(np.sum(self.N)) / (1 + self.N)
-        action = self.valid_actions[np.argmax(self.Q + U)]
-        leaf = self.children[action].traverse(c_puct)
+        a = np.argmax(self.Q + U)
+        leaf = self.children[a].traverse(c_puct)
         return leaf
 
     def evaluate(self, policy_and_vf):
-        pi, v = policy_and_vf(self.game.observation(canonical=True))  # evaluate a symmetry?
+        # evaluate a symmetry?
+        pi, v = policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
         if self.game.is_over():
             return pi, self.game.score(canonical=False), True
         return pi, v, False
@@ -179,18 +200,18 @@ class MCTSNode:
     def expand(self, pi):
         self.N = np.zeros(self.n, dtype=np.int32)
         self.Q = np.zeros(self.n, dtype=np.float32)
-        self.P = pi.numpy()[self.valid_actions]
+        self.P = pi.numpy()[0][self.valid_actions]
         self.P /= np.sum(self.P)
-        for action in self.valid_actions:
+        for a in range(self.n):
             game = deepcopy(self.game)
-            game.step(action)
-            self.children[action] = MCTSNode(game, parent=self, causing_action=action)
+            game.step(self.valid_actions[a])
+            self.children[a] = MCTSNode(game, parent=self, causing_action=a)
 
     def backup(self, v):
         if self.parent:
             self.parent._update(-v, self.causing_action)
             self.parent.backup(-v)
 
-    def _update(self, v, action):
-        self.N[action] += 1
-        self.Q[action] = (v + self.Q[action] * (self.N[action] - 1)) / self.N[action]
+    def _update(self, v, a):
+        self.N[a] += 1
+        self.Q[a] = (v + self.Q[a] * (self.N[a] - 1)) / self.N[a]
