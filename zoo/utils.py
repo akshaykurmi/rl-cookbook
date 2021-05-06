@@ -9,7 +9,7 @@ import tensorflow as tf
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['train', 'evaluate'], required=True, help='Train or evaluate the agent?')
-    parser.add_argument('--resume', default=False, required=False, type=bool, help='Resume training run?')
+    parser.add_argument('--resume', default=False, required=False, action='store_true', help='Resume training run?')
     return parser.parse_args()
 
 
