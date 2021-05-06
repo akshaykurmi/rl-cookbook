@@ -8,52 +8,44 @@ from rl.environments.two_player_game import TwoPlayerGame
 
 
 class TicTacToe(TwoPlayerGame):
-    GameStatus = Enum('GameStatus', 'PLAYER_1_WON, PLAYER_2_WON, DRAW, IN_PROGRESS')
-    Players = Enum('GameStatus', {'PLAYER_1': 1, 'PLAYER_2': -1})
+    GameStatus = Enum('GameStatus', 'X_WON, O_WON, DRAW, IN_PROGRESS')
+    Players = Enum('GameStatus', {'X': 1, 'O': -1})
 
     def __init__(self):
         self.metadata = {'render.modes': ['human']}
         self.observation_space = gym.spaces.Box(low=-1, high=1, shape=(3, 3), dtype=np.int8)
         self.action_space = gym.spaces.Discrete(9)
         self.state = np.zeros((3, 3), dtype=np.int8)
-        self.turn = TicTacToe.Players.PLAYER_1
+        self.turn = TicTacToe.Players.X
 
-    def reset(self, canonical=True):
+    def reset(self):
         self.state = np.zeros((3, 3), dtype=np.int8)
-        return self.observation(canonical)
+        self.turn = TicTacToe.Players.X
 
-    def step(self, action, canonical=True):
-        assert action in self.valid_actions(canonical)
+    def step(self, action):
+        assert action in self.valid_actions()
         col, row = action % 3, action // 3
         self.state[row, col] = self.turn.value
-        score = self.score(canonical)
-        is_over = self.is_over()
         self.turn = TicTacToe.Players(-self.turn.value)
-        observation = self.observation(canonical)
-        info = {}
-        return observation, score, is_over, info
 
-    def valid_actions(self, canonical=True):
+    def valid_actions(self):
         actions = np.argwhere(self.state == 0)
         actions = actions[:, 0] * 3 + actions[:, 1]
         return actions
 
     def observation(self, canonical=True):
-        if canonical and self.turn == TicTacToe.Players.PLAYER_2:
+        if canonical and self.turn == TicTacToe.Players.O:
             return self.state * -1
         return self.state.copy()
 
-    def score(self, canonical=True):
+    def score(self):
         status = self._game_status(self.state)
         if status in {TicTacToe.GameStatus.DRAW, TicTacToe.GameStatus.IN_PROGRESS}:
             return 0
-        win_status = {
-            TicTacToe.GameStatus.PLAYER_1_WON: 1,
-            TicTacToe.GameStatus.PLAYER_2_WON: -1,
+        return {
+            TicTacToe.GameStatus.X_WON: 1,
+            TicTacToe.GameStatus.O_WON: -1,
         }[status]
-        if canonical and self.turn == TicTacToe.Players.PLAYER_2:
-            return -win_status
-        return win_status
 
     def is_over(self):
         status = self._game_status(self.state)
@@ -65,8 +57,8 @@ class TicTacToe(TwoPlayerGame):
         result = {
             TicTacToe.GameStatus.IN_PROGRESS: f'TURN : {symbols[self.turn.value]}',
             TicTacToe.GameStatus.DRAW: f'Draw!',
-            TicTacToe.GameStatus.PLAYER_1_WON: f'X Won!',
-            TicTacToe.GameStatus.PLAYER_2_WON: f'O Won!',
+            TicTacToe.GameStatus.X_WON: f'X Won!',
+            TicTacToe.GameStatus.O_WON: f'O Won!',
         }[status]
         result = result.center(13)
         result += '\n┌' + ('───┬' * 3)[:-1] + '┐\n'
@@ -91,9 +83,9 @@ class TicTacToe(TwoPlayerGame):
         for elements in unique_elements_along_positions():
             if elements.size == 1:
                 if elements[0] == 1:
-                    return TicTacToe.GameStatus.PLAYER_1_WON
+                    return TicTacToe.GameStatus.X_WON
                 if elements[0] == -1:
-                    return TicTacToe.GameStatus.PLAYER_2_WON
+                    return TicTacToe.GameStatus.O_WON
         if np.count_nonzero(state) == 9:
             return TicTacToe.GameStatus.DRAW
         return TicTacToe.GameStatus.IN_PROGRESS
@@ -103,9 +95,11 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
     def __init__(self, observation_shape, n_actions, l2):
         super().__init__()
         self.flatten = tf.keras.layers.Flatten(input_shape=observation_shape)
-        self.dense1 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense1 = tf.keras.layers.Dense(32, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.dense2 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        # self.dense3 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.pi = tf.keras.layers.Dense(n_actions, 'softmax', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        # tanh here
         self.v = tf.keras.layers.Dense(1, 'linear', kernel_regularizer=tf.keras.regularizers.L2(l2))
 
     def get_config(self):
@@ -115,6 +109,7 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
         x = self.flatten(observations)
         x = self.dense1(x)
         x = self.dense2(x)
+        # x = self.dense3(x)
         pi = self.pi(x)
         v = self.v(x)
         return pi, v

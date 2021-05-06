@@ -8,15 +8,15 @@ class TwoPlayerGame(ABC):
     observation_space = None
 
     @abstractmethod
-    def reset(self, canonical=True):
+    def reset(self):
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, action, canonical=True):
+    def step(self, action):
         raise NotImplementedError
 
     @abstractmethod
-    def valid_actions(self, canonical=True):
+    def valid_actions(self):
         raise NotImplementedError
 
     @abstractmethod
@@ -24,7 +24,7 @@ class TwoPlayerGame(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def score(self, canonical=True):
+    def score(self):
         raise NotImplementedError
 
     @abstractmethod

@@ -24,7 +24,8 @@ class AlphaZero:
             store_fields=[
                 ReplayField('observation', shape=self.game.observation_space.shape,
                             dtype=self.game.observation_space.dtype),
-                ReplayField('p', shape=(self.game.action_space.n,)),
+                ReplayField('pi', shape=(self.game.action_space.n,)),
+                ReplayField('player'),
                 ReplayField('reward'),
                 ReplayField('done', dtype=np.bool),
             ],
@@ -53,18 +54,23 @@ class AlphaZero:
             for i in range(self.ckpt.iterations_done.numpy(), n_iterations):
 
                 for _ in range(n_self_play_games):
-                    observation = self.game.reset(canonical=True)
+                    self.game.reset()
                     mcts = MCTS(game=deepcopy(self.game), policy_and_vf=self.policy_and_vf, n_steps=mcts_n_steps,
                                 tau=mcts_tau, eta=mcts_eta, epsilon=mcts_epsilon, c_puct=mcts_c_puct)
+                    # transitions = []
                     for step in itertools.count():
-                        p = mcts.search(step)
-                        action = int(tfp.distributions.Categorical(probs=p).sample())
-                        observation_next, score, is_game_over, _ = self.game.step(action, canonical=True)
+                        pi = mcts.search(step)
+                        action = int(tfp.distributions.Categorical(probs=pi).sample())
+                        observation = self.game.observation(canonical=True)
+                        player = self.game.turn.value
+                        self.game.step(action)
                         mcts.step(action)
-                        transition = {'observation': observation, 'p': p, 'reward': score, 'done': is_game_over}
+                        z = self.game.score()
+                        is_over = self.game.is_over()
+                        transition = {'observation': observation, 'player': player, 'pi': pi, 'reward': z, 'done': is_over}
+                        # transitions.append(transition)
                         self.replay_buffer.store_transition(transition)
-                        observation = observation_next
-                        if is_game_over:
+                        if is_over:
                             break
 
                 losses = self.update(update_batch_size, update_iterations)
@@ -81,15 +87,14 @@ class AlphaZero:
                     print('=============== Evaluating ===============')
                     self.game.reset()
                     print(self.game.render())
-                    done = False
-                    while not done:
-                        valid_actions = self.game.valid_actions(canonical=True)
-                        pi, v = self.policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
-                        pi = pi.numpy()[0]
-                        p = np.zeros_like(pi)
-                        p[valid_actions] = pi[valid_actions]
-                        action = np.argmax(p)
-                        _, _, done, _ = self.game.step(action)
+                    while not self.game.is_over():
+                        valid_actions = self.game.valid_actions()
+                        p, _ = self.policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
+                        p = p.numpy()[0]
+                        pi = np.zeros_like(p)
+                        pi[valid_actions] = p[valid_actions]
+                        action = np.argmax(pi)
+                        self.game.step(action)
                         print(self.game.render())
                     print('============= Done Evaluating =============')
 
@@ -117,10 +122,10 @@ class AlphaZero:
 
     @tf.function
     def _update(self, data):
-        observation, p, z = data['observation'], data['p'], data['episode_return']
+        observation, pi, z = data['observation'], data['pi'], data['episode_return'] * data['player']
         with tf.GradientTape() as tape:
-            pi, v = self.policy_and_vf(observation, training=True)
-            policy_loss = self.cce_loss(p, pi)
+            p, v = self.policy_and_vf(observation, training=True)
+            policy_loss = self.cce_loss(pi, p)
             vf_loss = self.mse_loss(z, v)
             reg_loss = tf.reduce_sum(self.policy_and_vf.losses)
             total_loss = policy_loss + vf_loss + reg_loss
@@ -148,14 +153,14 @@ class MCTS:
             leaf.backup(v)
             if is_game_over:
                 break
-        p = np.zeros(self.root.game.action_space.n, dtype=np.float32)
+        pi = np.zeros(self.root.game.action_space.n, dtype=np.float32)
         if step <= self.tau:
-            p[self.root.valid_actions] = self.root.N
+            pi[self.root.valid_actions] = self.root.N
         else:
             one_hot_N = np.zeros_like(self.root.N)
             one_hot_N[np.argwhere(self.root.N == np.max(self.root.N))] = 1
-            p[self.root.valid_actions] = one_hot_N
-        return p / np.sum(p)
+            pi[self.root.valid_actions] = one_hot_N
+        return pi / np.sum(pi)
 
     def step(self, action):
         a = np.argwhere(self.root.valid_actions == action)[0][0]
@@ -168,7 +173,7 @@ class MCTSNode:
         self.children = {}
         self.parent: 'MCTSNode' = parent
         self.causing_action = causing_action
-        self.valid_actions = self.game.valid_actions(canonical=False)
+        self.valid_actions = self.game.valid_actions()
         self.n = len(self.valid_actions)
         self.N = None
         self.Q = None
@@ -194,8 +199,8 @@ class MCTSNode:
         # evaluate a symmetry?
         pi, v = policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
         if self.game.is_over():
-            return pi, self.game.score(canonical=False), True
-        return pi, v, False
+            return pi, self.game.score(), True
+        return pi, v * self.game.turn.value, False
 
     def expand(self, pi):
         self.N = np.zeros(self.n, dtype=np.int32)
