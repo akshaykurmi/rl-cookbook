@@ -27,7 +27,6 @@ if __name__ == '__main__':
         agent.train(
             n_iterations=100_000,
             n_self_play_games=10,
-            n_eval_games=10,
             mcts_tau=9,
             mcts_n_steps=100,
             mcts_eta=0.03,

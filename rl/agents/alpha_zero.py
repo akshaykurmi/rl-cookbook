@@ -14,8 +14,6 @@ class AlphaZero:
     def __init__(self, game, policy_and_vf_fn, lr, replay_buffer_size, ckpt_dir, log_dir):
         self.game = game
         self.policy_and_vf = policy_and_vf_fn()
-        self.policy_and_vf_old = policy_and_vf_fn()
-        self.policy_and_vf_old.set_weights(self.policy_and_vf.get_weights())
         self.ckpt_dir = ckpt_dir
         self.log_dir = log_dir
 
@@ -39,12 +37,12 @@ class AlphaZero:
 
         self.iterations_done = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.ckpt = tf.train.Checkpoint(iterations_done=self.iterations_done, optimizer=self.optimizer,
-                                        policy_and_vf=self.policy_and_vf, policy_and_vf_old=self.policy_and_vf_old)
+                                        policy_and_vf=self.policy_and_vf)
         self.ckpt_manager = tf.train.CheckpointManager(
             self.ckpt, self.ckpt_dir, max_to_keep=1, keep_checkpoint_every_n_hours=1)
         self.ckpt.restore(self.ckpt_manager.latest_checkpoint).expect_partial()
 
-    def train(self, n_iterations, n_self_play_games, n_eval_games,
+    def train(self, n_iterations, n_self_play_games,
               mcts_tau, mcts_n_steps, mcts_eta, mcts_epsilon, mcts_c_puct,
               update_batch_size, update_iterations,
               ckpt_every, log_every, eval_every):
@@ -80,22 +78,18 @@ class AlphaZero:
                     with summary_writer.as_default(), tf.name_scope('losses'):
                         for k, v in losses.items():
                             tf.summary.scalar(k, v, step=i)
-                    with summary_writer.as_default(), tf.name_scope('metrics'):
-                        tf.summary.scalar('replay_buffer_size', self.replay_buffer.current_size, step=i)
                 if i % eval_every == 0 or i == n_iterations - 1:
                     print('=============== Evaluating ===============')
                     self.game.reset()
                     print(self.game.render())
                     while not self.game.is_over():
                         valid_actions = self.game.valid_actions()
-                        p, _ = self.policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
-                        p = p.numpy()[0]
+                        p = self.policy_and_vf(self.game.observation(canonical=True)[None, ...])[0].numpy()[0]
                         pi = np.zeros_like(p)
                         pi[valid_actions] = p[valid_actions]
-                        print(p)
-                        print(pi)
-                        action = np.argmax(pi)
-                        self.game.step(action)
+                        print(f'All Actions   : {np.round(p, 2)}')
+                        print(f'Valid Actions : {np.round(pi, 2)}')
+                        self.game.step(np.argmax(pi))
                         print(self.game.render())
                     print('============= Done Evaluating =============')
 
@@ -107,17 +101,17 @@ class AlphaZero:
     def update(self, update_batch_size, update_iterations):
         dataset = self.replay_buffer.as_dataset(update_batch_size).take(update_iterations)
         policy_loss_acc, vf_loss_acc = MeanAccumulator(), MeanAccumulator()
-        reg_loss_acc, total_loss_acc = MeanAccumulator(), MeanAccumulator()
+        regularization_loss_acc, total_loss_acc = MeanAccumulator(), MeanAccumulator()
         for data in dataset:
-            policy_loss, vf_loss, reg_loss, total_loss = self._update(data)
+            policy_loss, vf_loss, regularization_loss, total_loss = self._update(data)
             policy_loss_acc.add(policy_loss)
             vf_loss_acc.add(vf_loss)
-            reg_loss_acc.add(reg_loss)
+            regularization_loss_acc.add(regularization_loss)
             total_loss_acc.add(total_loss)
         return {
             'policy_loss': policy_loss_acc.value(),
             'vf_loss': vf_loss_acc.value(),
-            'reg_loss': reg_loss_acc.value(),
+            'regularization_loss': regularization_loss_acc.value(),
             'total_loss': total_loss_acc.value(),
         }
 
@@ -128,11 +122,11 @@ class AlphaZero:
             p, v = self.policy_and_vf(observation, training=True)
             policy_loss = self.cce_loss(pi, p)
             vf_loss = self.mse_loss(z, v)
-            reg_loss = tf.reduce_sum(self.policy_and_vf.losses)
-            total_loss = policy_loss + vf_loss + reg_loss
+            regularization_loss = tf.reduce_sum(self.policy_and_vf.losses)
+            total_loss = policy_loss + vf_loss + regularization_loss
             gradients = tape.gradient(total_loss, self.policy_and_vf.trainable_variables)
             self.optimizer.apply_gradients(zip(gradients, self.policy_and_vf.trainable_variables))
-        return policy_loss, vf_loss, reg_loss, total_loss
+        return policy_loss, vf_loss, regularization_loss, total_loss
 
 
 class MCTS:
@@ -153,8 +147,6 @@ class MCTS:
             if not is_game_over:
                 leaf.expand(pi)
             leaf.backup(v)
-            # if is_game_over:
-            #     break
         pi = np.zeros(self.root.game.action_space.n, dtype=np.float32)
         if step <= self.tau:
             pi[self.root.valid_actions] = self.root.N
@@ -200,7 +192,6 @@ class MCTSNode:
     def evaluate(self, policy_and_vf):
         if self.game.is_over():
             return None, self.game.score() * self.game.turn.value, True  # v is always -1 or 0 here
-        # evaluate a symmetry?
         pi, v = policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
         return pi, v, False
 
