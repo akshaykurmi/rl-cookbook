@@ -96,11 +96,11 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
         super().__init__()
         self.flatten = tf.keras.layers.Flatten(input_shape=observation_shape)
         self.dense1 = tf.keras.layers.Dense(32, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
-        self.dense2 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
-        # self.dense3 = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense2 = tf.keras.layers.Dense(32, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense_pi = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense_v = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.pi = tf.keras.layers.Dense(n_actions, 'softmax', kernel_regularizer=tf.keras.regularizers.L2(l2))
-        # tanh here
-        self.v = tf.keras.layers.Dense(1, 'linear', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.v = tf.keras.layers.Dense(1, 'tanh', kernel_regularizer=tf.keras.regularizers.L2(l2))
 
     def get_config(self):
         super().get_config()
@@ -109,7 +109,8 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
         x = self.flatten(observations)
         x = self.dense1(x)
         x = self.dense2(x)
-        # x = self.dense3(x)
-        pi = self.pi(x)
-        v = self.v(x)
+        pi = self.dense_pi(x)
+        v = self.dense_v(x)
+        pi = self.pi(pi)
+        v = self.v(v)
         return pi, v

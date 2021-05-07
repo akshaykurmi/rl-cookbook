@@ -93,6 +93,8 @@ class AlphaZero:
                         p = p.numpy()[0]
                         pi = np.zeros_like(p)
                         pi[valid_actions] = p[valid_actions]
+                        print(p)
+                        print(pi)
                         action = np.argmax(pi)
                         self.game.step(action)
                         print(self.game.render())
@@ -149,10 +151,11 @@ class MCTS:
         for _ in range(self.n_steps):
             leaf = self.root.traverse(self.c_puct)
             pi, v, is_game_over = leaf.evaluate(self.policy_and_vf)
-            leaf.expand(pi)
+            if not is_game_over:
+                leaf.expand(pi)
             leaf.backup(v)
-            if is_game_over:
-                break
+            # if is_game_over:
+            #     break
         pi = np.zeros(self.root.game.action_space.n, dtype=np.float32)
         if step <= self.tau:
             pi[self.root.valid_actions] = self.root.N
@@ -196,11 +199,11 @@ class MCTSNode:
         return leaf
 
     def evaluate(self, policy_and_vf):
+        if self.game.is_over():
+            return None, self.game.score() * self.game.turn.value, True  # v is always -1 or 0 here
         # evaluate a symmetry?
         pi, v = policy_and_vf(np.expand_dims(self.game.observation(canonical=True), axis=0))
-        if self.game.is_over():
-            return pi, self.game.score(), True
-        return pi, v * self.game.turn.value, False
+        return pi, v, False
 
     def expand(self, pi):
         self.N = np.zeros(self.n, dtype=np.int32)
