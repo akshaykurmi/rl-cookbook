@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-from rl.replay_buffer import ReplayField, OnePassReplayBuffer
+from rl.replay_buffer import ReplayField, OnePassReplayBuffer, RewardToGo, Advantage
 from rl.utils import MeanAccumulator, GradientAccumulator, tf_standardize
 
 
@@ -37,11 +37,9 @@ class PPOClip:
                 ReplayField('done', dtype=np.bool),
             ],
             compute_fields=[
-                ReplayField('advantage'),
-                ReplayField('reward_to_go'),
+                Advantage(gamma=gamma, lambda_=lambda_),
+                RewardToGo(gamma=gamma),
             ],
-            gamma=gamma,
-            lambda_=lambda_,
         )
         self.policy_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_policy)
         self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_vf)

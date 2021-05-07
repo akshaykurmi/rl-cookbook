@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.signal
 import tensorflow as tf
 
 
@@ -113,3 +114,14 @@ def tf_standardize(x):
     x -= tf.reduce_mean(x)
     x /= tf.math.reduce_std(x) + 1e-10
     return x
+
+
+def discounted_cumsum(values, discount):
+    """
+    Example:
+    values = [1,2,3], discount = 0.9
+    returns = [1 * 0.9^0 + 2 * 0.9^1 + 3 * 0.9^3,
+               2 * 0.9^0 + 3 * 0.9^1,
+               3 * 0.9^0]
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], values[::-1], axis=0)[::-1]

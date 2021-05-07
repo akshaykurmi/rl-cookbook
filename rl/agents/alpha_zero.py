@@ -6,7 +6,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tqdm import tqdm
 
-from rl.replay_buffer import UniformReplayBuffer, ReplayField
+from rl.replay_buffer import UniformReplayBuffer, ReplayField, EpisodeReturn
 from rl.utils import MeanAccumulator
 
 
@@ -26,11 +26,11 @@ class AlphaZero:
                             dtype=self.game.observation_space.dtype),
                 ReplayField('pi', shape=(self.game.action_space.n,)),
                 ReplayField('player'),
-                ReplayField('reward'),
+                ReplayField('score'),
                 ReplayField('done', dtype=np.bool),
             ],
             compute_fields=[
-                ReplayField('episode_return'),
+                EpisodeReturn(reward_field='score', name='z'),
             ],
         )
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
@@ -57,7 +57,6 @@ class AlphaZero:
                     self.game.reset()
                     mcts = MCTS(game=deepcopy(self.game), policy_and_vf=self.policy_and_vf, n_steps=mcts_n_steps,
                                 tau=mcts_tau, eta=mcts_eta, epsilon=mcts_epsilon, c_puct=mcts_c_puct)
-                    # transitions = []
                     for step in itertools.count():
                         pi = mcts.search(step)
                         action = int(tfp.distributions.Categorical(probs=pi).sample())
@@ -65,10 +64,10 @@ class AlphaZero:
                         player = self.game.turn.value
                         self.game.step(action)
                         mcts.step(action)
-                        z = self.game.score()
+                        score = self.game.score()
                         is_over = self.game.is_over()
-                        transition = {'observation': observation, 'player': player, 'pi': pi, 'reward': z, 'done': is_over}
-                        # transitions.append(transition)
+                        transition = {'observation': observation, 'player': player, 'pi': pi, 'score': score,
+                                      'done': is_over}
                         self.replay_buffer.store_transition(transition)
                         if is_over:
                             break
@@ -124,7 +123,7 @@ class AlphaZero:
 
     @tf.function
     def _update(self, data):
-        observation, pi, z = data['observation'], data['pi'], data['episode_return'] * data['player']
+        observation, pi, z = data['observation'], data['pi'], data['z'] * data['player']
         with tf.GradientTape() as tape:
             p, v = self.policy_and_vf(observation, training=True)
             policy_loss = self.cce_loss(pi, p)

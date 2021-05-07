@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-from rl.replay_buffer import ReplayField, OnePassReplayBuffer
+from rl.replay_buffer import ReplayField, OnePassReplayBuffer, RewardToGo, Advantage
 from rl.utils import MeanAccumulator, GradientAccumulator, tf_standardize
 
 
@@ -37,11 +37,9 @@ class TRPO:
                 ReplayField('done', dtype=np.bool),
             ],
             compute_fields=[
-                ReplayField('advantage'),
-                ReplayField('reward_to_go'),
+                Advantage(gamma=gamma, lambda_=lambda_),
+                RewardToGo(gamma=gamma),
             ],
-            gamma=gamma,
-            lambda_=lambda_,
         )
         self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_vf)
 

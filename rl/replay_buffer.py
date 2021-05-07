@@ -1,51 +1,78 @@
-import collections
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 import numpy as np
-import scipy.signal
 import tensorflow as tf
 
-from rl.utils import RingBuffer
+from rl.utils import RingBuffer, discounted_cumsum
 
-ReplayField = collections.namedtuple(
-    'ReplayField',
-    ['name', 'dtype', 'shape'],
-    defaults=[np.float32, ()]
-)
+
+@dataclass
+class ReplayField:
+    name: str
+    dtype: np.dtype = np.float32
+    shape: tuple = ()
+
+
+@dataclass
+class ComputeField(ABC, ReplayField):
+    @abstractmethod
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+class Advantage(ComputeField):
+    def __init__(self, gamma=1.0, lambda_=1.0, reward_field='reward', value_field='value',
+                 value_next_field='value_next', name='advantage'):
+        super().__init__(name=name)
+        self.gamma = gamma
+        self.lambda_ = lambda_
+        self.reward_field = reward_field
+        self.value_field = value_field
+        self.value_next_field = value_next_field
+
+    def __call__(self, buffers, head, tail, *args, **kwargs):
+        rewards = buffers[self.reward_field][head:tail]
+        values = buffers[self.value_field][head:tail]
+        value_nexts = buffers[self.value_next_field][head:tail]
+        deltas = rewards + self.gamma * value_nexts - values
+        buffers[self.name][head:tail] = discounted_cumsum(deltas, self.gamma * self.lambda_)
+
+
+class RewardToGo(ComputeField):
+    def __init__(self, gamma=1.0, reward_field='reward', name='reward_to_go'):
+        super().__init__(name=name)
+        self.gamma = gamma
+        self.reward_field = reward_field
+
+    def __call__(self, buffers, head, tail, *args, **kwargs):
+        rewards = buffers[self.reward_field][head:tail]
+        buffers[self.name][head:tail] = discounted_cumsum(rewards, self.gamma)
+
+
+class EpisodeReturn(ComputeField):
+    def __init__(self, reward_field='reward', name='episode_return'):
+        super().__init__(name=name)
+        self.reward_field = reward_field
+
+    def __call__(self, buffers, head, tail, *args, **kwargs):
+        episode_return = np.sum(buffers['reward'][head:tail])
+        buffers[self.name][head:tail] = episode_return
+
+
+class EpisodeLength(ComputeField):
+    def __init__(self, name='episode_length'):
+        super().__init__(name=name)
+
+    def __call__(self, buffers, head, tail, *args, **kwargs):
+        buffers[self.name][head:tail] = tail - head + 1
 
 
 class ReplayBuffer(ABC):
-    def __init__(self, buffer_size, store_fields, compute_fields, gamma=1.0, lambda_=1.0):
+    def __init__(self, buffer_size, store_fields, compute_fields):
         self.buffer_size = buffer_size
         self.store_fields = store_fields
         self.compute_fields = compute_fields
-        self.gamma = gamma
-        self.lambda_ = lambda_
-
-        self.compute_config = {
-            'advantage': {
-                'func': self._compute_advantage,
-                'dependencies': {'done', 'reward', 'value', 'value_next'}
-            },
-            'reward_to_go': {
-                'func': self._compute_reward_to_go,
-                'dependencies': {'done', 'reward'}
-            },
-            'episode_return': {
-                'func': self._compute_episode_return,
-                'dependencies': {'done', 'reward'}
-            },
-            'episode_length': {
-                'func': self._compute_episode_length,
-                'dependencies': {'done'}
-            },
-        }
-        store_field_names = {f.name for f in self.store_fields}
-        for f in self.compute_fields:
-            dependencies = self.compute_config[f.name]['dependencies']
-            if not dependencies.issubset(store_field_names):
-                raise ValueError(f'Compute field {f.name} requires store fields {dependencies}')
-
         self.buffers = {f.name: RingBuffer(self.buffer_size, f.shape, f.dtype)
                         for f in self.store_fields + self.compute_fields}
         self.current_size, self.compute_head = 0, 0
@@ -80,39 +107,10 @@ class ReplayBuffer(ABC):
 
         for compute_tail in tail_indices:
             for f in self.compute_fields:
-                self.compute_config[f.name]['func'](self.compute_head, compute_tail)
+                f(self.buffers, self.compute_head, compute_tail)
             # If the last index is not done, do not move the compute_head
             if compute_tail < self.current_size or self.buffers['done'][-1]:
                 self.compute_head = compute_tail
-
-    def _compute_advantage(self, head, tail):
-        rewards = self.buffers['reward'][head:tail]
-        values = self.buffers['value'][head:tail]
-        value_nexts = self.buffers['value_next'][head:tail]
-        deltas = rewards + self.gamma * value_nexts - values
-        self.buffers['advantage'][head:tail] = self._discounted_cumsum(deltas, self.gamma * self.lambda_)
-
-    def _compute_reward_to_go(self, head, tail):
-        rewards = self.buffers['reward'][head:tail]
-        self.buffers['reward_to_go'][head:tail] = self._discounted_cumsum(rewards, self.gamma)
-
-    def _compute_episode_return(self, head, tail):
-        episode_return = np.sum(self.buffers['reward'][head:tail])
-        self.buffers['episode_return'][head:tail] = episode_return
-
-    def _compute_episode_length(self, head, tail):
-        self.buffers['episode_length'][head:tail] = tail - head + 1
-
-    @staticmethod
-    def _discounted_cumsum(values, discount):
-        """
-        Example:
-        values = [1,2,3], discount = 0.9
-        returns = [1 * 0.9^0 + 2 * 0.9^1 + 3 * 0.9^3,
-                   2 * 0.9^0 + 3 * 0.9^1,
-                   3 * 0.9^0]
-        """
-        return scipy.signal.lfilter([1], [1, float(-discount)], values[::-1], axis=0)[::-1]
 
 
 class OnePassReplayBuffer(ReplayBuffer):

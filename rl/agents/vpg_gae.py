@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-from rl.replay_buffer import ReplayField, OnePassReplayBuffer
+from rl.replay_buffer import ReplayField, OnePassReplayBuffer, Advantage, RewardToGo
 from rl.utils import GradientAccumulator, MeanAccumulator, tf_standardize
 
 
@@ -28,11 +28,9 @@ class VPGGAE:
                 ReplayField('done', dtype=np.bool),
             ],
             compute_fields=[
-                ReplayField('advantage'),
-                ReplayField('reward_to_go'),
+                Advantage(gamma=gamma, lambda_=lambda_),
+                RewardToGo(gamma=gamma),
             ],
-            gamma=gamma,
-            lambda_=lambda_,
         )
         self.policy_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_policy)
         self.vf_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_vf)

@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-from rl.replay_buffer import OnePassReplayBuffer, ReplayField
+from rl.replay_buffer import OnePassReplayBuffer, ReplayField, EpisodeReturn
 from rl.utils import GradientAccumulator, MeanAccumulator, tf_standardize
 
 
@@ -22,7 +22,7 @@ class VPG:
                 ReplayField('done', dtype=np.bool),
             ],
             compute_fields=[
-                ReplayField('episode_return'),
+                EpisodeReturn()
             ],
         )
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
