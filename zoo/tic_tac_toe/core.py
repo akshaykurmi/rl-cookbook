@@ -9,7 +9,7 @@ from rl.environments.two_player_game import TwoPlayerGame
 
 class TicTacToe(TwoPlayerGame):
     GameStatus = Enum('GameStatus', 'X_WON, O_WON, DRAW, IN_PROGRESS')
-    Players = Enum('GameStatus', {'X': 1, 'O': -1})
+    Players = Enum('Players', {'X': 1, 'O': -1})
 
     def __init__(self):
         self.metadata = {'render.modes': ['human']}
