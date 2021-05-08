@@ -1,5 +1,4 @@
 from enum import Enum
-from functools import lru_cache
 
 import gym
 import numpy as np
@@ -11,38 +10,49 @@ from rl.environments.two_player_game import TwoPlayerGame
 
 class Connect4(TwoPlayerGame):
     GameStatus = Enum('GameStatus', 'BLUE_WON, YELLOW_WON, DRAW, IN_PROGRESS')
-    Players = Enum('GameStatus', {'BLUE': 1, 'YELLOW': -1})
+    Players = Enum('Players', {'BLUE': 1, 'YELLOW': -1})
+
+    metadata = {'render.modes': ['human']}
+    observation_space = gym.spaces.Box(low=-1, high=1, shape=(6, 7, 1), dtype=np.int8)
+    action_space = gym.spaces.Discrete(7)
+
+    _TOP_ROW = np.uint64(int('1000000_1000000_1000000_1000000_1000000_1000000_1000000', 2))
+    _GRID_MASKS = [np.uint64(1) << np.uint64(i + 7 * j) for i in range(5, -1, -1) for j in range(7)]
 
     def __init__(self):
-        self.metadata = {'render.modes': ['human']}
-        self.observation_space = gym.spaces.Box(low=-1, high=1, shape=(6, 7, 1), dtype=np.int8)
-        self.action_space = gym.spaces.Discrete(7)
-        self.state = np.zeros((6, 7), dtype=np.int8)
-        self.turn = Connect4.Players.BLUE
+        self.state, self.turn = None, None
+        self.reset()
 
     def reset(self):
-        self.state = np.zeros((6, 7), dtype=np.int8)
+        self.state = {
+            Connect4.Players.BLUE: np.uint64(0),
+            Connect4.Players.YELLOW: np.uint64(0),
+            'height': np.arange(7, dtype=np.uint64) * 7
+        }
         self.turn = Connect4.Players.BLUE
 
     def step(self, action):
         assert action in self.valid_actions()
-        col = action
-        row = 6 - np.count_nonzero(self.state[:, col]) - 1
-        self.state[row, col] = self.turn.value
+        move = np.uint64(1) << self.state['height'][action]
+        self.state[self.turn] ^= move
+        self.state['height'][action] += 1
         self.turn = Connect4.Players(-self.turn.value)
 
     def valid_actions(self):
-        actions = np.count_nonzero(self.state, axis=0)
-        actions = np.argwhere(actions < 6).flatten()
-        return actions
+        actions = []
+        for col in range(7):
+            if (self._TOP_ROW & (np.uint64(1) << self.state['height'][col])) == 0:
+                actions.append(col)
+        return np.array(actions, dtype=np.int8)
 
     def observation(self, canonical=True):
+        grid = self._bitboard_to_grid()
         if canonical:
-            return self.state[..., None] * self.turn.value
-        return self.state[..., None]
+            return grid[..., None] * self.turn.value
+        return grid[..., None]
 
     def score(self):
-        status = self._game_status(tuple(map(tuple, self.state)))
+        status = self._game_status()
         if status in {Connect4.GameStatus.DRAW, Connect4.GameStatus.IN_PROGRESS}:
             return 0
         return {
@@ -51,13 +61,13 @@ class Connect4(TwoPlayerGame):
         }[status]
 
     def is_over(self):
-        status = self._game_status(tuple(map(tuple, self.state)))
-        return status != Connect4.GameStatus.IN_PROGRESS
+        return self._game_status() != Connect4.GameStatus.IN_PROGRESS
 
     def render(self, mode='human'):
+        grid = self._bitboard_to_grid()
         symbols = {0: ' ', 1: color('●', fore='#8e86ff'), -1: color('●', fore='#cfff00')}
         turns = {1: 'BLUE', -1: 'YELLOW'}
-        status = self._game_status(tuple(map(tuple, self.state)))
+        status = self._game_status()
         result = {
             Connect4.GameStatus.IN_PROGRESS: f'TURN : {turns[self.turn.value]}',
             Connect4.GameStatus.DRAW: f'Draw!',
@@ -66,7 +76,7 @@ class Connect4(TwoPlayerGame):
         }[status]
         result = result.center(29)
         result += '\n┌' + ('───┬' * 7)[:-1] + '┐\n'
-        for i, row in enumerate(self.state):
+        for i, row in enumerate(grid):
             for v in row:
                 result += f'| {symbols[v]} '
             result += '|\n'
@@ -76,37 +86,36 @@ class Connect4(TwoPlayerGame):
         result += ''.join([f'  {i} ' for i in range(7)]) + '\n'
         return result
 
-    @staticmethod
-    @lru_cache(maxsize=1)
-    def _game_status(state):
-        def positions_to_check():
-            indices = np.reshape(np.arange(6 * 7), (6, 7))
-            for i in range(6):
-                for j in range(4):
-                    yield indices[i, j:j + 4]
-            for j in range(7):
-                for i in range(3):
-                    yield indices[i:i + 4, j]
-            for offset in range(-2, 4):
-                diagonal = np.diag(indices, offset)
-                for i in range(diagonal.size - 3):
-                    yield diagonal[i:i + 4]
-            for offset in range(-2, 4):
-                diagonal = np.diag(np.fliplr(indices), offset)
-                for i in range(diagonal.size - 3):
-                    yield diagonal[i:i + 4]
+    def _game_status(self):
+        def is_won(bitboard):
+            if bitboard & (bitboard >> np.uint64(6)) & (bitboard >> np.uint64(12)) & (bitboard >> np.uint64(18)) != 0:
+                return True  # diagonal left-right
+            if bitboard & (bitboard >> np.uint64(8)) & (bitboard >> np.uint64(16)) & (bitboard >> np.uint64(24)) != 0:
+                return True  # diagonal right-left
+            if bitboard & (bitboard >> np.uint64(7)) & (bitboard >> np.uint64(14)) & (bitboard >> np.uint64(21)) != 0:
+                return True  # horizontal
+            if bitboard & (bitboard >> np.uint64(1)) & (bitboard >> np.uint64(2)) & (bitboard >> np.uint64(3)) != 0:
+                return True  # vertical
+            return False
 
-        state = np.array(state)
-        state = state.flatten()
-        for positions in positions_to_check():
-            total = np.sum(state[positions])
-            if total == 4:
-                return Connect4.GameStatus.BLUE_WON
-            if total == -4:
-                return Connect4.GameStatus.YELLOW_WON
-        if np.count_nonzero(state) == 6 * 7:
+        if is_won(self.state[Connect4.Players.BLUE]):
+            return Connect4.GameStatus.BLUE_WON
+        if is_won(self.state[Connect4.Players.YELLOW]):
+            return Connect4.GameStatus.YELLOW_WON
+        if len(self.valid_actions()) == 0:
             return Connect4.GameStatus.DRAW
         return Connect4.GameStatus.IN_PROGRESS
+
+    def _bitboard_to_grid(self):
+        def get_value_at_position(mask):
+            if self.state[Connect4.Players.BLUE] & mask != 0:
+                return Connect4.Players.BLUE.value
+            elif self.state[Connect4.Players.YELLOW] & mask != 0:
+                return Connect4.Players.YELLOW.value
+            return 0
+
+        grid = np.array([get_value_at_position(mask) for mask in self._GRID_MASKS], dtype=np.int8)
+        return np.reshape(grid, (6, 7))
 
 
 class PolicyAndValueFunctionNetwork(tf.keras.Model):

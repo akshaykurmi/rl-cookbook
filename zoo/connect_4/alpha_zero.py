@@ -26,14 +26,14 @@ if __name__ == '__main__':
     if args.mode == 'train':
         agent.train(
             n_iterations=100_000,
-            n_self_play_games=1,
+            n_self_play_games=10,
             mcts_tau=6 * 7,
-            mcts_n_steps=500,
-            mcts_eta=0.03,
+            mcts_n_steps=100,
+            mcts_eta=0.1,
             mcts_epsilon=0.25,
             mcts_c_puct=1,
             update_batch_size=32,
-            update_iterations=1,
+            update_iterations=10,
             ckpt_every=50,
             log_every=1,
             eval_every=20,
