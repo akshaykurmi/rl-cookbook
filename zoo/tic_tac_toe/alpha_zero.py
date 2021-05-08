@@ -25,7 +25,7 @@ if __name__ == '__main__':
 
     if args.mode == 'train':
         agent.train(
-            n_iterations=100_000,
+            n_iterations=5000,
             n_self_play_games=10,
             mcts_tau=9,
             mcts_n_steps=100,
