@@ -56,7 +56,7 @@ class EpisodeReturn(ComputeField):
         self.reward_field = reward_field
 
     def __call__(self, buffers, head, tail, *args, **kwargs):
-        episode_return = np.sum(buffers['reward'][head:tail])
+        episode_return = np.sum(buffers[self.reward_field][head:tail])
         buffers[self.name][head:tail] = episode_return
 
 
