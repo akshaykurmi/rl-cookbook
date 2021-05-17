@@ -1,29 +1,75 @@
 import itertools
+import os
 from copy import deepcopy
+from time import sleep
 
 import numpy as np
+import ray
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tqdm import tqdm
 
 from rl.replay_buffer import UniformReplayBuffer, ReplayField, EpisodeReturn
-from rl.utils import MeanAccumulator
 
 
-class AlphaZero:
-    def __init__(self, game, policy_and_vf_fn, lr, replay_buffer_size, ckpt_dir, log_dir):
-        self.game = game
+@ray.remote
+class SelfPlayJob:
+    def __init__(self, game_fn, policy_and_vf_fn, mcts_n_steps, mcts_tau, mcts_eta, mcts_epsilon, mcts_c_puct):
+        self.game = game_fn()
         self.policy_and_vf = policy_and_vf_fn()
-        self.ckpt_dir = ckpt_dir
-        self.log_dir = log_dir
+        self.mcts_n_steps = mcts_n_steps
+        self.mcts_tau = mcts_tau
+        self.mcts_eta = mcts_eta
+        self.mcts_epsilon = mcts_epsilon
+        self.mcts_c_puct = mcts_c_puct
 
-        self.replay_buffer = UniformReplayBuffer(
+    def set_weights(self, weights):
+        self.policy_and_vf.set_weights(weights)
+
+    def simulate_game(self):
+        episode = []
+        self.game.reset()
+        mcts = MCTS(game=deepcopy(self.game), policy_and_vf=self.policy_and_vf, n_steps=self.mcts_n_steps,
+                    tau=self.mcts_tau, eta=self.mcts_eta, epsilon=self.mcts_epsilon, c_puct=self.mcts_c_puct)
+        for step in itertools.count():
+            pi = mcts.search(step)
+            action = int(tfp.distributions.Categorical(probs=pi).sample())
+            observation = self.game.observation(canonical=True)
+            player = self.game.turn.value
+            self.game.step(action)
+            mcts.step(action)
+            score = self.game.score()
+            is_over = self.game.is_over()
+            transition = {'observation': observation, 'player': player, 'pi': pi, 'score': score, 'done': is_over}
+            episode.append(transition)
+            if is_over:
+                break
+        self.game.close()
+        return episode
+
+
+@ray.remote
+class ParameterServer:
+    def __init__(self):
+        self.weights = None
+
+    def set_weights(self, weights):
+        self.weights = weights
+
+    def get_weights(self):
+        return self.weights
+
+
+@ray.remote
+class ReplayBuffer:
+    def __init__(self, game_fn, replay_buffer_size, batch_size):
+        game = game_fn()
+        self.buffer = UniformReplayBuffer(
             buffer_size=replay_buffer_size,
             store_fields=[
-                ReplayField('observation', shape=self.game.observation_space.shape,
-                            dtype=self.game.observation_space.dtype),
-                ReplayField('pi', shape=(self.game.action_space.n,)),
-                ReplayField('player'),
+                ReplayField('observation', shape=game.observation_space.shape,
+                            dtype=game.observation_space.dtype),
+                ReplayField('pi', shape=(game.action_space.n,)),
+                ReplayField('player', dtype=np.int8),
                 ReplayField('score'),
                 ReplayField('done', dtype=np.bool),
             ],
@@ -31,93 +77,92 @@ class AlphaZero:
                 EpisodeReturn(reward_field='score', name='z'),
             ],
         )
+        self.batch_size = batch_size
+
+    def add_episode(self, episode):
+        for transition in episode:
+            self.buffer.store_transition(transition)
+
+    def sample_batch(self):
+        return next(iter(self.buffer.as_dataset(batch_size=self.batch_size).take(1)))
+
+    def is_ready(self):
+        return self.buffer.current_size > 0
+
+
+@ray.remote
+class SelfPlayDriver:
+    def __init__(self, parameter_server, replay_buffer, game_fn, policy_and_vf_fn, n_self_play_workers, mcts_n_steps,
+                 mcts_tau, mcts_eta, mcts_epsilon, mcts_c_puct):
+        self.parameter_server = parameter_server
+        self.replay_buffer = replay_buffer
+        self.self_play_workers = [
+            SelfPlayJob.remote(game_fn, policy_and_vf_fn, mcts_n_steps, mcts_tau, mcts_eta, mcts_epsilon, mcts_c_puct)
+            for _ in range(n_self_play_workers)
+        ]
+        current_weights = self.parameter_server.get_weights.remote()
+        ray.get([worker.set_weights.remote(current_weights) for worker in self.self_play_workers])
+
+    def start(self):
+        jobs = {worker.simulate_game.remote(): worker
+                for worker in self.self_play_workers}
+        while True:
+            simulated_episode_id = ray.wait(list(jobs))[0][0]
+            worker = jobs.pop(simulated_episode_id)
+            self.replay_buffer.add_episode.remote(simulated_episode_id)
+            worker.set_weights.remote(self.parameter_server.get_weights.remote())
+            jobs[worker.simulate_game.remote()] = worker
+
+
+@ray.remote
+class ModelUpdateDriver:
+    def __init__(self, parameter_server, replay_buffer, game_fn, policy_and_vf_fn, lr, ckpt_dir, log_dir,
+                 n_iterations, ckpt_every, log_every, eval_every):
+        self.parameter_server = parameter_server
+        self.replay_buffer = replay_buffer
+        self.game = game_fn()
+        self.policy_and_vf = policy_and_vf_fn()
+        self.n_iterations = n_iterations
+        self.ckpt_every = ckpt_every
+        self.log_every = log_every
+        self.eval_every = eval_every
+
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
         self.cce_loss = tf.keras.losses.CategoricalCrossentropy()
         self.mse_loss = tf.keras.losses.MeanSquaredError()
 
+        self.summary_writer = tf.summary.create_file_writer(log_dir)
         self.iterations_done = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.ckpt = tf.train.Checkpoint(iterations_done=self.iterations_done, optimizer=self.optimizer,
                                         policy_and_vf=self.policy_and_vf)
         self.ckpt_manager = tf.train.CheckpointManager(
-            self.ckpt, self.ckpt_dir, max_to_keep=1, keep_checkpoint_every_n_hours=1)
+            self.ckpt, os.path.join(ckpt_dir, 'model_update'), max_to_keep=1, keep_checkpoint_every_n_hours=1)
         self.ckpt.restore(self.ckpt_manager.latest_checkpoint).expect_partial()
 
-    def train(self, n_iterations, n_self_play_games,
-              mcts_tau, mcts_n_steps, mcts_eta, mcts_epsilon, mcts_c_puct,
-              update_batch_size, update_iterations,
-              ckpt_every, log_every, eval_every):
-        summary_writer = tf.summary.create_file_writer(self.log_dir)
-        with tqdm(total=n_iterations, desc='Running train loop', unit='iteration') as pbar:
-            pbar.update(self.ckpt.iterations_done.numpy())
-            for i in range(self.ckpt.iterations_done.numpy(), n_iterations):
+        ray.get(self.parameter_server.set_weights.remote(self.policy_and_vf.get_weights()))
 
-                for _ in range(n_self_play_games):
-                    self.game.reset()
-                    mcts = MCTS(game=deepcopy(self.game), policy_and_vf=self.policy_and_vf, n_steps=mcts_n_steps,
-                                tau=mcts_tau, eta=mcts_eta, epsilon=mcts_epsilon, c_puct=mcts_c_puct)
-                    for step in itertools.count():
-                        pi = mcts.search(step)
-                        action = int(tfp.distributions.Categorical(probs=pi).sample())
-                        observation = self.game.observation(canonical=True)
-                        player = self.game.turn.value
-                        self.game.step(action)
-                        mcts.step(action)
-                        score = self.game.score()
-                        is_over = self.game.is_over()
-                        transition = {'observation': observation, 'player': player, 'pi': pi, 'score': score,
-                                      'done': is_over}
-                        self.replay_buffer.store_transition(transition)
-                        if is_over:
-                            break
+    def start(self):
+        while not ray.get(self.replay_buffer.is_ready.remote()):
+            sleep(1)
+        for i in range(self.ckpt.iterations_done.numpy(), self.n_iterations):
+            batch = ray.get(self.replay_buffer.sample_batch.remote())
+            losses = self._update(batch)
 
-                losses = self.update(update_batch_size, update_iterations)
+            if i % self.ckpt_every == 0 or i == self.n_iterations - 1:
+                self.ckpt_manager.save()
+            if i % self.log_every == 0 or i == self.n_iterations - 1:
+                with self.summary_writer.as_default(), tf.name_scope('losses'):
+                    for k, v in losses.items():
+                        tf.summary.scalar(k, v, step=i)
+            if i % self.eval_every == 0 or i == self.n_iterations - 1:
+                self._evaluate()
 
-                if i % ckpt_every == 0 or i == n_iterations - 1:
-                    self.ckpt_manager.save()
-                if i % log_every == 0 or i == n_iterations - 1:
-                    with summary_writer.as_default(), tf.name_scope('losses'):
-                        for k, v in losses.items():
-                            tf.summary.scalar(k, v, step=i)
-                if i % eval_every == 0 or i == n_iterations - 1:
-                    print('=============== Evaluating ===============')
-                    self.game.reset()
-                    print(self.game.render())
-                    while not self.game.is_over():
-                        valid_actions = self.game.valid_actions()
-                        p = self.policy_and_vf(self.game.observation(canonical=True)[None, ...])[0].numpy()[0]
-                        pi = np.zeros_like(p)
-                        pi[valid_actions] = p[valid_actions]
-                        print(f'All Actions   : {np.round(p, 2)}')
-                        print(f'Valid Actions : {np.round(pi, 2)}')
-                        self.game.step(np.argmax(pi))
-                        print(self.game.render())
-                    print('============= Done Evaluating =============')
-
-                self.ckpt.iterations_done.assign_add(1)
-                pbar.update(1)
-
-        self.game.close()
-
-    def update(self, update_batch_size, update_iterations):
-        dataset = self.replay_buffer.as_dataset(update_batch_size).take(update_iterations)
-        policy_loss_acc, vf_loss_acc = MeanAccumulator(), MeanAccumulator()
-        regularization_loss_acc, total_loss_acc = MeanAccumulator(), MeanAccumulator()
-        for data in dataset:
-            policy_loss, vf_loss, regularization_loss, total_loss = self._update(data)
-            policy_loss_acc.add(policy_loss)
-            vf_loss_acc.add(vf_loss)
-            regularization_loss_acc.add(regularization_loss)
-            total_loss_acc.add(total_loss)
-        return {
-            'policy_loss': policy_loss_acc.value(),
-            'vf_loss': vf_loss_acc.value(),
-            'regularization_loss': regularization_loss_acc.value(),
-            'total_loss': total_loss_acc.value(),
-        }
+            self.parameter_server.set_weights.remote(self.policy_and_vf.get_weights())
+            self.ckpt.iterations_done.assign_add(1)
 
     @tf.function
-    def _update(self, data):
-        observation, pi, z = data['observation'], data['pi'], data['z'] * data['player']
+    def _update(self, batch):
+        observation, pi, z = batch['observation'], batch['pi'], batch['z'] * tf.cast(batch['player'], tf.float32)
         with tf.GradientTape() as tape:
             p, v = self.policy_and_vf(observation, training=True)
             policy_loss = self.cce_loss(pi, p)
@@ -126,7 +171,66 @@ class AlphaZero:
             total_loss = policy_loss + vf_loss + regularization_loss
             gradients = tape.gradient(total_loss, self.policy_and_vf.trainable_variables)
             self.optimizer.apply_gradients(zip(gradients, self.policy_and_vf.trainable_variables))
-        return policy_loss, vf_loss, regularization_loss, total_loss
+        return {
+            'policy_loss': policy_loss,
+            'vf_loss': vf_loss,
+            'regularization_loss': regularization_loss,
+            'total_loss': total_loss,
+        }
+
+    def _evaluate(self):
+        print('=============== Evaluating ===============')
+        self.game.reset()
+        print(self.game.render())
+        while not self.game.is_over():
+            valid_actions = self.game.valid_actions()
+            p = self.policy_and_vf(self.game.observation(canonical=True)[None, ...])[0].numpy()[0]
+            pi = np.zeros_like(p)
+            pi[valid_actions] = p[valid_actions]
+            print(f'All Actions   : {np.round(p, 2)}')
+            print(f'Valid Actions : {np.round(pi, 2)}', end='\n\n')
+            self.game.step(np.argmax(pi))
+            print(self.game.render())
+        print('============= Done Evaluating =============')
+
+
+class AlphaZero:
+    def __init__(self, game_fn, policy_and_vf_fn, lr, mcts_n_steps, mcts_tau, mcts_eta, mcts_epsilon, mcts_c_puct,
+                 n_self_play_workers, update_iterations, update_batch_size, replay_buffer_size, ckpt_dir, log_dir,
+                 ckpt_every, log_every, eval_every):
+        self.game_fn = game_fn
+        self.policy_and_vf_fn = policy_and_vf_fn
+        self.lr = lr
+        self.mcts_n_steps = mcts_n_steps
+        self.mcts_tau = mcts_tau
+        self.mcts_eta = mcts_eta
+        self.mcts_epsilon = mcts_epsilon
+        self.mcts_c_puct = mcts_c_puct
+        self.n_self_play_workers = n_self_play_workers
+        self.update_iterations = update_iterations
+        self.update_batch_size = update_batch_size
+        self.replay_buffer_size = replay_buffer_size
+        self.ckpt_dir = ckpt_dir
+        self.log_dir = log_dir
+        self.ckpt_every = ckpt_every
+        self.log_every = log_every
+        self.eval_every = eval_every
+
+    def train(self):
+        ray.init(ignore_reinit_error=True)
+        replay_buffer = ReplayBuffer.remote(self.game_fn, self.replay_buffer_size, self.update_batch_size)
+        parameter_server = ParameterServer.remote()
+        model_update_driver = ModelUpdateDriver.remote(
+            parameter_server, replay_buffer, self.game_fn, self.policy_and_vf_fn, self.lr, self.ckpt_dir, self.log_dir,
+            self.update_iterations, self.ckpt_every, self.log_every, self.eval_every
+        )
+        self_play_driver = SelfPlayDriver.remote(
+            parameter_server, replay_buffer, self.game_fn, self.policy_and_vf_fn, self.n_self_play_workers,
+            self.mcts_n_steps, self.mcts_tau, self.mcts_eta, self.mcts_epsilon, self.mcts_c_puct
+        )
+        self_play_driver.start.remote()
+        ray.get(model_update_driver.start.remote())
+        ray.shutdown()
 
 
 class MCTS:
