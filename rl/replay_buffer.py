@@ -1,3 +1,5 @@
+import os
+import pickle
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -80,6 +82,30 @@ class ReplayBuffer(ABC):
     @abstractmethod
     def as_dataset(self, *args, **kwargs):
         self._compute()
+
+    def save(self, save_dir):
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, 'replay_buffer.pkl'), 'wb') as f:
+            pickle.dump({
+                'buffer_size': self.buffer_size,
+                'store_fields': self.store_fields,
+                'compute_fields': self.compute_fields,
+                'current_size': self.current_size,
+                'compute_head': self.compute_head,
+                'buffers': self.buffers,
+            }, f, pickle.HIGHEST_PROTOCOL)
+
+    def load(self, save_dir):
+        save_fname = os.path.join(save_dir, 'replay_buffer.pkl')
+        if os.path.exists(save_fname):
+            with open(save_fname, 'rb') as f:
+                data = pickle.load(f)
+                self.buffer_size = data['buffer_size']
+                self.store_fields = data['store_fields']
+                self.compute_fields = data['compute_fields']
+                self.current_size = data['current_size']
+                self.compute_head = data['compute_head']
+                self.buffers = data['buffers']
 
     def purge(self):
         for buffer in self.buffers.values():

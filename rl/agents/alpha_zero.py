@@ -23,7 +23,8 @@ class SelfPlayJob:
         self.mcts_c_puct = mcts_c_puct
 
     def set_weights(self, weights):
-        self.policy_and_vf.set_weights(weights)
+        if weights:
+            self.policy_and_vf.set_weights(weights)
 
     def simulate_game(self):
         episode = []
@@ -50,7 +51,7 @@ class SelfPlayJob:
 @ray.remote
 class ParameterServer:
     def __init__(self):
-        self.weights = None
+        self.weights = []
 
     def set_weights(self, weights):
         self.weights = weights
@@ -61,7 +62,7 @@ class ParameterServer:
 
 @ray.remote
 class ReplayBuffer:
-    def __init__(self, game_fn, replay_buffer_size, batch_size):
+    def __init__(self, game_fn, replay_buffer_size, batch_size, replay_dir, save_every):
         game = game_fn()
         self.buffer = UniformReplayBuffer(
             buffer_size=replay_buffer_size,
@@ -78,10 +79,15 @@ class ReplayBuffer:
             ],
         )
         self.batch_size = batch_size
+        self.replay_dir = replay_dir
+        self.save_every = save_every
+        self.buffer.load(self.replay_dir)
 
-    def add_episode(self, episode):
+    def add_episode(self, episode, step):
         for transition in episode:
             self.buffer.store_transition(transition)
+        if step % self.save_every == 0:
+            self.buffer.save(self.replay_dir)
 
     def sample_batch(self):
         return next(iter(self.buffer.as_dataset(batch_size=self.batch_size).take(1)))
@@ -106,10 +112,10 @@ class SelfPlayDriver:
     def start(self):
         jobs = {worker.simulate_game.remote(): worker
                 for worker in self.self_play_workers}
-        while True:
+        for i in itertools.count():
             simulated_episode_id = ray.wait(list(jobs))[0][0]
             worker = jobs.pop(simulated_episode_id)
-            self.replay_buffer.add_episode.remote(simulated_episode_id)
+            self.replay_buffer.add_episode.remote(simulated_episode_id, i)
             worker.set_weights.remote(self.parameter_server.get_weights.remote())
             jobs[worker.simulate_game.remote()] = worker
 
@@ -145,6 +151,7 @@ class ModelUpdateDriver:
         while not ray.get(self.replay_buffer.is_ready.remote()):
             sleep(1)
         for i in range(self.ckpt.iterations_done.numpy(), self.n_iterations):
+            sleep(5)
             batch = ray.get(self.replay_buffer.sample_batch.remote())
             losses = self._update(batch)
 
@@ -197,7 +204,7 @@ class ModelUpdateDriver:
 class AlphaZero:
     def __init__(self, game_fn, policy_and_vf_fn, lr, mcts_n_steps, mcts_tau, mcts_eta, mcts_epsilon, mcts_c_puct,
                  n_self_play_workers, update_iterations, update_batch_size, replay_buffer_size, ckpt_dir, log_dir,
-                 ckpt_every, log_every, eval_every):
+                 replay_dir, ckpt_every, log_every, replay_save_every, eval_every):
         self.game_fn = game_fn
         self.policy_and_vf_fn = policy_and_vf_fn
         self.lr = lr
@@ -212,13 +219,16 @@ class AlphaZero:
         self.replay_buffer_size = replay_buffer_size
         self.ckpt_dir = ckpt_dir
         self.log_dir = log_dir
+        self.replay_dir = replay_dir
         self.ckpt_every = ckpt_every
         self.log_every = log_every
+        self.replay_save_every = replay_save_every
         self.eval_every = eval_every
 
     def train(self):
         ray.init(ignore_reinit_error=True)
-        replay_buffer = ReplayBuffer.remote(self.game_fn, self.replay_buffer_size, self.update_batch_size)
+        replay_buffer = ReplayBuffer.remote(self.game_fn, self.replay_buffer_size, self.update_batch_size,
+                                            self.replay_dir, self.replay_save_every)
         parameter_server = ParameterServer.remote()
         model_update_driver = ModelUpdateDriver.remote(
             parameter_server, replay_buffer, self.game_fn, self.policy_and_vf_fn, self.lr, self.ckpt_dir, self.log_dir,

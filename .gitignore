@@ -7,4 +7,5 @@ log
 
 .DS_Store
 *.pyc
+*.pkl
 

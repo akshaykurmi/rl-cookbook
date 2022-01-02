@@ -1,0 +1,12 @@
+- Figure out how to reduce memory usage
+    - Shuffle OnePassReplayBuffer without generating indices
+- Fix TRPO
+- Make train runs resumable
+- Abstract common things from agents
+- Fix number of steps / episodes when run resumes
+- set training=True in loops
+- refactor compute in replay buffer
+- Parallelize alpha zero
+    - Multiple workers to generate self-play episodes
+    - MCTS root parallelization
+    - Speed up environment

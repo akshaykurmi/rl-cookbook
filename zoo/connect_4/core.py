@@ -83,7 +83,7 @@ class Connect4(TwoPlayerGame):
             if i < 5:
                 result += '├' + ('───┼' * 7)[:-1] + '┤\n'
         result += '└' + ('───┴' * 7)[:-1] + '┘\n'
-        result += ''.join([f'  {i} ' for i in range(7)]) + '\n'
+        result += ''.join([f'  {i} ' for i in range(7)])
         return result
 
     def _game_status(self):
@@ -122,16 +122,23 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
     def __init__(self, observation_shape, n_actions, l2):
         super().__init__()
         self.entry = tf.keras.layers.InputLayer(input_shape=observation_shape)
-        self.conv1 = tf.keras.layers.Conv2D(16, (4, 4), activation='relu',
+        self.conv1 = tf.keras.layers.Conv2D(32, (2, 2), activation='relu',
                                             kernel_regularizer=tf.keras.regularizers.L2(l2))
-        self.conv2 = tf.keras.layers.Conv2D(16, (2, 2), activation='relu',
+        self.conv2 = tf.keras.layers.Conv2D(32, (2, 2), activation='relu',
+                                            kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.conv3 = tf.keras.layers.Conv2D(64, (2, 2), activation='relu',
+                                            kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.conv4 = tf.keras.layers.Conv2D(64, (2, 2), activation='relu',
                                             kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.flatten = tf.keras.layers.Flatten()
-        self.dense1 = tf.keras.layers.Dense(32, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
-        self.dense_pi = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
-        self.dense_v = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense1 = tf.keras.layers.Dense(128, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense_pi1 = tf.keras.layers.Dense(64, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense_pi2 = tf.keras.layers.Dense(32, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.pi = tf.keras.layers.Dense(n_actions, 'softmax', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense_v1 = tf.keras.layers.Dense(64, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.dense_v2 = tf.keras.layers.Dense(32, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.v = tf.keras.layers.Dense(1, 'tanh', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.call(tf.ones((1, *observation_shape)))
 
     def get_config(self):
         super().get_config()
@@ -140,10 +147,14 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
         x = self.entry(tf.cast(observations, tf.float32))
         x = self.conv1(x)
         x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
         x = self.flatten(x)
         x = self.dense1(x)
-        pi = self.dense_pi(x)
-        v = self.dense_v(x)
+        pi = self.dense_pi1(x)
+        pi = self.dense_pi2(pi)
         pi = self.pi(pi)
+        v = self.dense_v1(x)
+        v = self.dense_v2(v)
         v = self.v(v)
         return pi, v

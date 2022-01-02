@@ -13,13 +13,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_output_dirs(base_dir, run_id, args):
-    ckpt_dir = os.path.join(base_dir, 'ckpt', run_id)
-    log_dir = os.path.join(base_dir, 'log', run_id)
+def get_output_dirs(base_dir, run_id, args, dirs):
+    dirs = [os.path.join(base_dir, d, run_id) for d in dirs]
     if args.mode == 'train' and args.resume is False:
-        shutil.rmtree(ckpt_dir, ignore_errors=True)
-        shutil.rmtree(log_dir, ignore_errors=True)
-    return ckpt_dir, log_dir
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
+    return dirs
 
 
 def evaluate_policy(env, policy):

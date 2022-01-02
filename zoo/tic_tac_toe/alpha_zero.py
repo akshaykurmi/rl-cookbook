@@ -8,36 +8,34 @@ if __name__ == '__main__':
     args = parse_args()
     ckpt_dir, log_dir = get_output_dirs(os.path.dirname(__file__), 'alpha_zero', args)
 
-    game = TicTacToe()
+    game_fn = lambda: TicTacToe()
     policy_and_vf_fn = lambda: PolicyAndValueFunctionNetwork(
-        observation_shape=game.observation_space.shape,
-        n_actions=game.action_space.n,
+        observation_shape=TicTacToe.observation_space.shape,
+        n_actions=TicTacToe.action_space.n,
         l2=1e-3,
     )
     agent = AlphaZero(
-        game=game,
+        game_fn=game_fn,
         policy_and_vf_fn=policy_and_vf_fn,
         lr=1e-3,
+        mcts_n_steps=100,
+        mcts_tau=9,
+        mcts_eta=0.03,
+        mcts_epsilon=0.25,
+        mcts_c_puct=1,
+        n_self_play_workers=8,
+        update_iterations=10_000,
+        update_batch_size=64,
         replay_buffer_size=10_000,
         ckpt_dir=ckpt_dir,
         log_dir=log_dir,
+        ckpt_every=500,
+        log_every=10,
+        eval_every=500,
     )
 
     if args.mode == 'train':
-        agent.train(
-            n_iterations=5000,
-            n_self_play_games=10,
-            mcts_tau=9,
-            mcts_n_steps=100,
-            mcts_eta=0.03,
-            mcts_epsilon=0.25,
-            mcts_c_puct=1,
-            update_batch_size=32,
-            update_iterations=5,
-            ckpt_every=50,
-            log_every=1,
-            eval_every=20,
-        )
+        agent.train()
     if args.mode == 'evaluate':
         import numpy as np
 

@@ -11,10 +11,11 @@ class TicTacToe(TwoPlayerGame):
     GameStatus = Enum('GameStatus', 'X_WON, O_WON, DRAW, IN_PROGRESS')
     Players = Enum('Players', {'X': 1, 'O': -1})
 
+    metadata = {'render.modes': ['human']}
+    observation_space = gym.spaces.Box(low=-1, high=1, shape=(3, 3), dtype=np.int8)
+    action_space = gym.spaces.Discrete(9)
+
     def __init__(self):
-        self.metadata = {'render.modes': ['human']}
-        self.observation_space = gym.spaces.Box(low=-1, high=1, shape=(3, 3), dtype=np.int8)
-        self.action_space = gym.spaces.Discrete(9)
         self.state = np.zeros((3, 3), dtype=np.int8)
         self.turn = TicTacToe.Players.X
 
@@ -68,7 +69,7 @@ class TicTacToe(TwoPlayerGame):
             result += '|\n'
             if i < 2:
                 result += '├' + ('───┼' * 3)[:-1] + '┤\n'
-        result += '└' + ('───┴' * 3)[:-1] + '┘\n'
+        result += '└' + ('───┴' * 3)[:-1] + '┘'
         return result
 
     @staticmethod
@@ -101,6 +102,7 @@ class PolicyAndValueFunctionNetwork(tf.keras.Model):
         self.dense_v = tf.keras.layers.Dense(16, 'relu', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.pi = tf.keras.layers.Dense(n_actions, 'softmax', kernel_regularizer=tf.keras.regularizers.L2(l2))
         self.v = tf.keras.layers.Dense(1, 'tanh', kernel_regularizer=tf.keras.regularizers.L2(l2))
+        self.call(tf.ones((1, *observation_shape)))
 
     def get_config(self):
         super().get_config()
